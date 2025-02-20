@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本转语音工具</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>文本转语音工具</h1>
+        
+        <div class="form-group">
+            <textarea id="text-input" placeholder="请输入要转换的文本..."></textarea>
+        </div>
+        
+        <div class="form-group voice-selection">
+            <label for="voice-select">选择语音：</label>
+            <select id="voice-select" class="voice-select">
+                <option value="">加载中...</option>
+            </select>
+            <div class="voice-info">
+                <span class="gender"></span>
+                <span class="style"></span>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <button id="convert-btn" class="btn">转换为语音</button>
+        </div>
+        
+        <div class="loading">
+            <p>正在转换中，请稍候...</p>
+        </div>
+        
+        <div class="error-message">
+            <p>转换过程中出现错误，请重试。</p>
+        </div>
+        
+        <div class="download-section">
+            <div class="form-group">
+                <input type="text" id="filename-input" class="filename-input" placeholder="输入保存的文件名（不需要.mp3后缀）">
+            </div>
+            <button id="download-btn" class="btn">下载音频</button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const textInput = document.getElementById('text-input');
+            const voiceSelect = document.getElementById('voice-select');
+            const convertBtn = document.getElementById('convert-btn');
+            const downloadSection = document.querySelector('.download-section');
+            const downloadBtn = document.getElementById('download-btn');
+            const filenameInput = document.getElementById('filename-input');
+            const loading = document.querySelector('.loading');
+            const errorMessage = document.querySelector('.error-message');
+            const genderSpan = document.querySelector('.gender');
+            const styleSpan = document.querySelector('.style');
+            
+            let audioPath = '';
+            let defaultDownloadName = '';
+            let voices = [];
+            
+            // 加载语音列表
+            async function loadVoices() {
+                try {
+                    const response = await fetch('/voices');
+                    voices = await response.json();
+                    
+                    // 清空选择框
+                    voiceSelect.innerHTML = '';
+                    
+                    // 添加语音选项
+                    voices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.id;
+                        option.textContent = `${voice.name}`;
+                        voiceSelect.appendChild(option);
+                    });
+                    
+                    // 触发change事件以显示第一个语音的信息
+                    updateVoiceInfo(voices[0]);
+                } catch (error) {
+                    console.error('Failed to load voices:', error);
+                    voiceSelect.innerHTML = '<option value="">加载失败</option>';
+                }
+            }
+            
+            // 更新语音信息
+            function updateVoiceInfo(voice) {
+                if (voice) {
+                    genderSpan.textContent = `性别：${voice.gender}`;
+                    styleSpan.textContent = `风格：${voice.style}`;
+                } else {
+                    genderSpan.textContent = '';
+                    styleSpan.textContent = '';
+                }
+            }
+            
+            // 监听语音选择变化
+            voiceSelect.addEventListener('change', function() {
+                const selectedVoice = voices.find(v => v.id === this.value);
+                updateVoiceInfo(selectedVoice);
+            });
+            
+            convertBtn.addEventListener('click', async function() {
+                const text = textInput.value.trim();
+                if (!text) {
+                    alert('请输入要转换的文本');
+                    return;
+                }
+                
+                const selectedVoice = voiceSelect.value;
+                if (!selectedVoice) {
+                    alert('请选择语音');
+                    return;
+                }
+                
+                // 显示加载状态
+                loading.classList.add('show');
+                convertBtn.disabled = true;
+                downloadSection.classList.remove('show');
+                errorMessage.classList.remove('show');
+                
+                try {
+                    const formData = new FormData();
+                    formData.append('text', text);
+                    formData.append('voice', selectedVoice);
+                    
+                    const response = await fetch('/convert', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('转换失败');
+                    }
+                    
+                    const data = await response.json();
+                    audioPath = data.audio_path;
+                    defaultDownloadName = data.download_name;
+                    
+                    // 设置默认文件名（去掉.mp3后缀）
+                    filenameInput.value = defaultDownloadName.replace('.mp3', '');
+                    
+                    // 显示下载区域
+                    downloadSection.classList.add('show');
+                } catch (error) {
+                    errorMessage.classList.add('show');
+                } finally {
+                    loading.classList.remove('show');
+                    convertBtn.disabled = false;
+                }
+            });
+            
+            downloadBtn.addEventListener('click', function() {
+                if (!audioPath) return;
+                
+                let downloadName = filenameInput.value.trim();
+                if (!downloadName) {
+                    downloadName = defaultDownloadName;
+                } else if (!downloadName.endsWith('.mp3')) {
+                    downloadName += '.mp3';
+                }
+                
+                // 创建下载链接
+                const downloadUrl = `/download?path=${encodeURIComponent(audioPath)}&name=${encodeURIComponent(downloadName)}`;
+                window.location.href = downloadUrl;
+            });
+            
+            // 加载语音列表
+            loadVoices();
+        });
+    </script>
+</body>
+</html> 
