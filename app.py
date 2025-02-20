@@ -81,8 +81,8 @@ def convert():
     if not text:
         return jsonify({'error': 'No text provided'}), 400
     
-    if len(text) > 5000:  # 添加文本长度限制
-        return jsonify({'error': 'Text is too long (maximum 5000 characters)'}), 400
+    if len(text) > 10000:  # 修改文本长度限制为10000字符
+        return jsonify({'error': 'Text is too long (maximum 10000 characters)'}), 400
     
     voice = request.form.get('voice', 'zh-CN-XiaoxiaoNeural')  # 允许自定义语音
     max_retries = 3
