@@ -11,8 +11,8 @@ pyinstaller edge-tts-web.spec
 
 # 创建发布包
 cd dist
-mv "Edge TTS Web" "Edge TTS Web.app"
-zip -r "Edge-TTS-Web-macOS.zip" "Edge TTS Web.app"
+zip -r "Edge-TTS-Web-macOS.zip" "edge-tts-web"
 cd ..
 
-echo "macOS 打包完成！" 
+echo "macOS 单文件可执行程序打包完成！"
+echo "可执行文件位置: dist/edge-tts-web" 

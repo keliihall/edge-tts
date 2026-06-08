@@ -3,19 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文本转语音工具</title>
+    <title>文本转语音工具 v0.3</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
-        <h1>文本转语音工具</h1>
-        
-        <div class="form-group">
-            <textarea id="text-input" placeholder="请输入要转换的文本..."></textarea>
+        <header class="app-header">
+            <h1>文本转语音工具 <span class="version-badge">v0.3</span></h1>
+        </header>
+
+        <div class="network-status" id="network-status">
+            <span class="status-indicator" id="status-indicator">●</span>
+            <span class="status-text" id="status-text">检查网络连接中...</span>
         </div>
-        
+
         <div class="form-group voice-selection">
-            <label for="voice-select">选择语音：</label>
+            <label for="voice-select">选择语音</label>
             <select id="voice-select" class="voice-select">
                 <option value="">加载中...</option>
             </select>
@@ -23,71 +26,217 @@
                 <span class="gender"></span>
                 <span class="style"></span>
             </div>
-        </div>
-        
-        <div class="form-group">
-            <button id="convert-btn" class="btn">转换为语音</button>
-        </div>
-        
-        <div class="loading">
-            <p>正在转换中，请稍候...</p>
-        </div>
-        
-        <div class="error-message">
-            <p>转换过程中出现错误，请重试。</p>
-        </div>
-        
-        <div class="download-section">
-            <div class="form-group">
-                <input type="text" id="filename-input" class="filename-input" placeholder="输入保存的文件名（不需要.mp3后缀）">
+            <div class="speed-selection">
+                <label for="speech-rate-select">语速</label>
+                <select id="speech-rate-select" class="speed-select">
+                    <option value="0.75">0.75x</option>
+                    <option value="0.9">0.9x</option>
+                    <option value="1.0" selected>1.0x</option>
+                    <option value="1.1">1.1x</option>
+                    <option value="1.25">1.25x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2.0">2.0x</option>
+                </select>
             </div>
-            <button id="download-btn" class="btn">下载音频</button>
         </div>
+
+        <div class="mode-tabs" role="tablist" aria-label="转换模式">
+            <button type="button" class="mode-tab active" data-mode="single">单条文本</button>
+            <button type="button" class="mode-tab" data-mode="batch">批量 TXT</button>
+        </div>
+
+        <section class="mode-panel active" id="single-panel">
+            <div class="form-group">
+                <div class="field-header">
+                    <label for="text-input">文本内容</label>
+                    <span id="text-counter">0/20000</span>
+                </div>
+                <textarea id="text-input" maxlength="20000" placeholder="请输入要转换的文本..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <button id="convert-btn" class="btn">转换为语音</button>
+            </div>
+
+            <div class="loading" id="single-loading">
+                <p>正在转换中，请稍候...</p>
+            </div>
+
+            <div class="error-message" id="single-error">
+                <p>转换过程中出现错误，请重试。</p>
+            </div>
+
+            <div class="download-section" id="single-download-section">
+                <div class="form-group">
+                    <input type="text" id="filename-input" class="filename-input" placeholder="输入保存的文件名（不需要.mp3后缀）">
+                </div>
+                <button id="download-btn" class="btn">下载音频</button>
+            </div>
+        </section>
+
+        <section class="mode-panel" id="batch-panel">
+            <div class="batch-upload">
+                <input type="file" id="batch-files" accept=".txt,text/plain" multiple>
+                <label for="batch-files" class="btn secondary-btn">选择 TXT 文件</label>
+                <span class="file-summary" id="batch-file-summary">未选择文件</span>
+            </div>
+
+            <div class="batch-file-list empty" id="batch-file-list">未选择文件</div>
+
+            <div class="action-row">
+                <button id="batch-convert-btn" class="btn">批量转换</button>
+                <button id="batch-clear-btn" class="btn secondary-btn" type="button">清空</button>
+            </div>
+
+            <div class="batch-progress" id="batch-progress">
+                <div class="progress-track">
+                    <div class="progress-bar" id="batch-progress-bar"></div>
+                </div>
+                <div class="progress-text" id="batch-progress-text">等待开始</div>
+            </div>
+
+            <div class="error-message" id="batch-error">
+                <p>批量转换失败，请重试。</p>
+            </div>
+
+            <div class="batch-result-section" id="batch-result-section">
+                <div class="result-header">
+                    <h2>转换结果</h2>
+                    <button id="batch-download-all-btn" class="btn small-btn" type="button">下载 ZIP</button>
+                </div>
+                <div class="batch-results-list" id="batch-results-list"></div>
+            </div>
+        </section>
     </div>
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
+            const MAX_TEXT_LENGTH = 20000;
+            const MAX_BATCH_FILES = 20;
             const textInput = document.getElementById('text-input');
+            const textCounter = document.getElementById('text-counter');
             const voiceSelect = document.getElementById('voice-select');
+            const speechRateSelect = document.getElementById('speech-rate-select');
             const convertBtn = document.getElementById('convert-btn');
-            const downloadSection = document.querySelector('.download-section');
+            const downloadSection = document.getElementById('single-download-section');
             const downloadBtn = document.getElementById('download-btn');
             const filenameInput = document.getElementById('filename-input');
-            const loading = document.querySelector('.loading');
-            const errorMessage = document.querySelector('.error-message');
+            const singleLoading = document.getElementById('single-loading');
+            const singleError = document.getElementById('single-error');
             const genderSpan = document.querySelector('.gender');
             const styleSpan = document.querySelector('.style');
-            
-            let audioPath = '';
+            const statusIndicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
+            const modeTabs = document.querySelectorAll('.mode-tab');
+            const modePanels = document.querySelectorAll('.mode-panel');
+            const batchFileInput = document.getElementById('batch-files');
+            const batchFileSummary = document.getElementById('batch-file-summary');
+            const batchFileList = document.getElementById('batch-file-list');
+            const batchConvertBtn = document.getElementById('batch-convert-btn');
+            const batchClearBtn = document.getElementById('batch-clear-btn');
+            const batchProgress = document.getElementById('batch-progress');
+            const batchProgressBar = document.getElementById('batch-progress-bar');
+            const batchProgressText = document.getElementById('batch-progress-text');
+            const batchError = document.getElementById('batch-error');
+            const batchResultSection = document.getElementById('batch-result-section');
+            const batchResultsList = document.getElementById('batch-results-list');
+            const batchDownloadAllBtn = document.getElementById('batch-download-all-btn');
+
+            let fileId = '';
             let defaultDownloadName = '';
             let voices = [];
-            
-            // 加载语音列表
+            let networkStatus = 'checking';
+            let selectedBatchFiles = [];
+            let currentBatchJobId = '';
+            let batchPollTimer = null;
+            let batchJobFinished = false;
+
+            function showError(container, message) {
+                const errorText = container.querySelector('p');
+                errorText.textContent = message || '转换过程中出现错误，请重试。';
+                container.classList.add('show');
+            }
+
+            function getErrorMessage(data, fallback) {
+                if (data && data.error) {
+                    if (typeof data.error === 'string') {
+                        return data.error;
+                    }
+                    if (data.error.message) {
+                        return data.error.message;
+                    }
+                }
+                return fallback;
+            }
+
+            function hideError(container) {
+                container.classList.remove('show');
+            }
+
+            function formatBytes(bytes) {
+                if (!bytes) return '0 B';
+                if (bytes < 1024) return `${bytes} B`;
+                if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+                return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+            }
+
+            function statusTextFor(status) {
+                const labels = {
+                    pending: '等待中',
+                    processing: '转换中',
+                    done: '已完成',
+                    failed: '失败'
+                };
+                return labels[status] || status;
+            }
+
+            function updateTextCounter() {
+                textCounter.textContent = `${textInput.value.length}/${MAX_TEXT_LENGTH}`;
+            }
+
+            async function checkNetworkStatus() {
+                try {
+                    const response = await fetch('/health');
+                    const data = await response.json();
+                    networkStatus = data.network_connectivity ? 'connected' : 'disconnected';
+
+                    if (data.network_connectivity) {
+                        statusIndicator.textContent = '●';
+                        statusIndicator.style.color = '#4CAF50';
+                        statusText.textContent = '网络连接正常';
+                    } else {
+                        statusIndicator.textContent = '●';
+                        statusIndicator.style.color = '#f44336';
+                        statusText.textContent = '网络连接异常';
+                    }
+                } catch (error) {
+                    networkStatus = 'error';
+                    statusIndicator.textContent = '●';
+                    statusIndicator.style.color = '#ff9800';
+                    statusText.textContent = '无法检查网络状态';
+                }
+            }
+
             async function loadVoices() {
                 try {
                     const response = await fetch('/voices');
                     voices = await response.json();
-                    
-                    // 清空选择框
                     voiceSelect.innerHTML = '';
-                    
-                    // 添加语音选项
+
                     voices.forEach(voice => {
                         const option = document.createElement('option');
                         option.value = voice.id;
-                        option.textContent = `${voice.name}`;
+                        option.textContent = voice.name;
                         voiceSelect.appendChild(option);
                     });
-                    
-                    // 触发change事件以显示第一个语音的信息
+
                     updateVoiceInfo(voices[0]);
                 } catch (error) {
                     console.error('Failed to load voices:', error);
                     voiceSelect.innerHTML = '<option value="">加载失败</option>';
                 }
             }
-            
-            // 更新语音信息
+
             function updateVoiceInfo(voice) {
                 if (voice) {
                     genderSpan.textContent = `性别：${voice.gender}`;
@@ -97,81 +246,345 @@
                     styleSpan.textContent = '';
                 }
             }
-            
-            // 监听语音选择变化
+
+            function setMode(mode) {
+                modeTabs.forEach(tab => {
+                    tab.classList.toggle('active', tab.dataset.mode === mode);
+                });
+                modePanels.forEach(panel => {
+                    panel.classList.toggle('active', panel.id === `${mode}-panel`);
+                });
+            }
+
+            function renderBatchFiles() {
+                batchFileList.innerHTML = '';
+                batchFileList.classList.toggle('empty', selectedBatchFiles.length === 0);
+
+                if (selectedBatchFiles.length === 0) {
+                    batchFileSummary.textContent = '未选择文件';
+                    batchFileList.textContent = '未选择文件';
+                    return;
+                }
+
+                batchFileSummary.textContent = `已选择 ${selectedBatchFiles.length} 个文件`;
+
+                selectedBatchFiles.forEach((file, index) => {
+                    const row = document.createElement('div');
+                    row.className = 'file-row';
+
+                    const meta = document.createElement('div');
+                    meta.className = 'file-meta';
+
+                    const name = document.createElement('span');
+                    name.className = 'file-name';
+                    name.textContent = file.name;
+
+                    const size = document.createElement('span');
+                    size.className = 'file-size';
+                    size.textContent = formatBytes(file.size);
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'icon-btn';
+                    removeBtn.dataset.removeIndex = index;
+                    removeBtn.title = '移除文件';
+                    removeBtn.textContent = '×';
+
+                    meta.appendChild(name);
+                    meta.appendChild(size);
+                    row.appendChild(meta);
+                    row.appendChild(removeBtn);
+                    batchFileList.appendChild(row);
+                });
+            }
+
+            function resetBatchJob() {
+                if (batchPollTimer) {
+                    clearInterval(batchPollTimer);
+                    batchPollTimer = null;
+                }
+
+                if (currentBatchJobId && batchJobFinished) {
+                    fetch(`/batch/job/${currentBatchJobId}`, { method: 'DELETE' }).catch(() => {});
+                }
+
+                currentBatchJobId = '';
+                batchJobFinished = false;
+                selectedBatchFiles = [];
+                batchFileInput.value = '';
+                batchProgress.classList.remove('show');
+                batchResultSection.classList.remove('show');
+                batchProgressBar.style.width = '0%';
+                batchProgressText.textContent = '等待开始';
+                batchConvertBtn.disabled = false;
+                batchDownloadAllBtn.disabled = true;
+                hideError(batchError);
+                renderBatchFiles();
+            }
+
+            function renderBatchJob(job) {
+                const progressPercent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
+                batchProgress.classList.add('show');
+                batchProgressBar.style.width = `${progressPercent}%`;
+                batchProgressText.textContent = `已完成 ${job.completed}/${job.total} · 成功 ${job.success_count} · 失败 ${job.failed_count}`;
+                batchResultSection.classList.add('show');
+                batchDownloadAllBtn.disabled = job.success_count === 0;
+
+                batchResultsList.innerHTML = '';
+                job.items.forEach(item => {
+                    const row = document.createElement('div');
+                    row.className = `result-row ${item.status}`;
+
+                    const meta = document.createElement('div');
+                    meta.className = 'result-meta';
+
+                    const name = document.createElement('span');
+                    name.className = 'file-name';
+                    name.textContent = item.source_name;
+
+                    const detail = document.createElement('span');
+                    detail.className = 'file-size';
+                    detail.textContent = `${item.text_length} 字 · ${item.size ? formatBytes(item.size) : statusTextFor(item.status)}`;
+
+                    meta.appendChild(name);
+                    meta.appendChild(detail);
+
+                    if (item.error) {
+                        const error = document.createElement('span');
+                        error.className = 'result-error';
+                        error.textContent = item.error;
+                        meta.appendChild(error);
+                    }
+
+                    const status = document.createElement('span');
+                    status.className = `result-status ${item.status}`;
+                    status.textContent = statusTextFor(item.status);
+
+                    row.appendChild(meta);
+
+                    if (item.status === 'done') {
+                        const downloadLink = document.createElement('a');
+                        downloadLink.className = 'btn small-btn';
+                        downloadLink.href = `/batch/download/${encodeURIComponent(job.id)}/${encodeURIComponent(item.id)}`;
+                        downloadLink.textContent = '下载';
+                        row.appendChild(downloadLink);
+                    } else {
+                        row.appendChild(status);
+                    }
+
+                    batchResultsList.appendChild(row);
+                });
+            }
+
+            async function pollBatchStatus() {
+                if (!currentBatchJobId) return;
+
+                try {
+                    const response = await fetch(`/batch/status/${currentBatchJobId}`);
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '无法获取批量任务状态'));
+                    }
+
+                    renderBatchJob(data);
+
+                    if (data.status === 'finished') {
+                        batchJobFinished = true;
+                        batchConvertBtn.disabled = false;
+                        if (batchPollTimer) {
+                            clearInterval(batchPollTimer);
+                            batchPollTimer = null;
+                        }
+                    }
+                } catch (error) {
+                    showError(batchError, error.message || '无法获取批量任务状态');
+                    batchConvertBtn.disabled = false;
+                    if (batchPollTimer) {
+                        clearInterval(batchPollTimer);
+                        batchPollTimer = null;
+                    }
+                }
+            }
+
             voiceSelect.addEventListener('change', function() {
                 const selectedVoice = voices.find(v => v.id === this.value);
                 updateVoiceInfo(selectedVoice);
             });
-            
+
+            modeTabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    setMode(this.dataset.mode);
+                });
+            });
+
+            textInput.addEventListener('input', updateTextCounter);
+
             convertBtn.addEventListener('click', async function() {
                 const text = textInput.value.trim();
                 if (!text) {
                     alert('请输入要转换的文本');
                     return;
                 }
-                
+
                 const selectedVoice = voiceSelect.value;
                 if (!selectedVoice) {
                     alert('请选择语音');
                     return;
                 }
-                
-                // 显示加载状态
-                loading.classList.add('show');
+
+                if (networkStatus === 'disconnected') {
+                    alert('网络连接异常，无法使用语音转换功能。请检查网络连接后重试。');
+                    return;
+                }
+
+                singleLoading.classList.add('show');
                 convertBtn.disabled = true;
                 downloadSection.classList.remove('show');
-                errorMessage.classList.remove('show');
-                
+                fileId = '';
+                hideError(singleError);
+
                 try {
                     const formData = new FormData();
                     formData.append('text', text);
                     formData.append('voice', selectedVoice);
-                    
+                    formData.append('speech_rate', speechRateSelect.value || '1.0');
+
                     const response = await fetch('/convert', {
                         method: 'POST',
                         body: formData
                     });
-                    
-                    if (!response.ok) {
-                        throw new Error('转换失败');
-                    }
-                    
+
                     const data = await response.json();
-                    audioPath = data.audio_path;
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '转换失败'));
+                    }
+
+                    fileId = data.file_id;
                     defaultDownloadName = data.download_name;
-                    
-                    // 设置默认文件名（去掉.mp3后缀）
                     filenameInput.value = defaultDownloadName.replace('.mp3', '');
-                    
-                    // 显示下载区域
                     downloadSection.classList.add('show');
                 } catch (error) {
-                    errorMessage.classList.add('show');
+                    showError(singleError, error.message || '转换过程中出现错误，请重试。');
                 } finally {
-                    loading.classList.remove('show');
+                    singleLoading.classList.remove('show');
                     convertBtn.disabled = false;
                 }
             });
-            
+
             downloadBtn.addEventListener('click', function() {
-                if (!audioPath) return;
-                
+                if (!fileId) return;
+
                 let downloadName = filenameInput.value.trim();
                 if (!downloadName) {
                     downloadName = defaultDownloadName;
                 } else if (!downloadName.endsWith('.mp3')) {
                     downloadName += '.mp3';
                 }
-                
-                // 创建下载链接
-                const downloadUrl = `/download?path=${encodeURIComponent(audioPath)}&name=${encodeURIComponent(downloadName)}`;
+
+                const downloadUrl = `/download/${encodeURIComponent(fileId)}?name=${encodeURIComponent(downloadName)}`;
                 window.location.href = downloadUrl;
             });
-            
-            // 加载语音列表
+
+            batchFileInput.addEventListener('change', function() {
+                const files = Array.from(this.files);
+                const txtFiles = files.filter(file => file.name.toLowerCase().endsWith('.txt'));
+
+                if (txtFiles.length !== files.length) {
+                    alert('仅支持 TXT 文件');
+                }
+
+                if (txtFiles.length > MAX_BATCH_FILES) {
+                    alert(`一次最多上传 ${MAX_BATCH_FILES} 个 TXT 文件`);
+                }
+
+                selectedBatchFiles = txtFiles.slice(0, MAX_BATCH_FILES);
+                hideError(batchError);
+                batchResultSection.classList.remove('show');
+                batchProgress.classList.remove('show');
+                renderBatchFiles();
+            });
+
+            batchFileList.addEventListener('click', function(event) {
+                const removeIndex = event.target.dataset.removeIndex;
+                if (removeIndex === undefined) return;
+
+                selectedBatchFiles.splice(Number(removeIndex), 1);
+                batchFileInput.value = '';
+                renderBatchFiles();
+            });
+
+            batchConvertBtn.addEventListener('click', async function() {
+                if (selectedBatchFiles.length === 0) {
+                    alert('请选择 TXT 文件');
+                    return;
+                }
+
+                const selectedVoice = voiceSelect.value;
+                if (!selectedVoice) {
+                    alert('请选择语音');
+                    return;
+                }
+
+                if (networkStatus === 'disconnected') {
+                    alert('网络连接异常，无法使用语音转换功能。请检查网络连接后重试。');
+                    return;
+                }
+
+                hideError(batchError);
+                batchConvertBtn.disabled = true;
+                batchResultSection.classList.remove('show');
+                batchProgress.classList.add('show');
+                batchProgressBar.style.width = '0%';
+                batchProgressText.textContent = '正在创建批量任务...';
+
+                try {
+                    const formData = new FormData();
+                    formData.append('voice', selectedVoice);
+                    formData.append('speech_rate', speechRateSelect.value || '1.0');
+                    selectedBatchFiles.forEach(file => {
+                        formData.append('files', file);
+                    });
+
+                    const response = await fetch('/batch/convert', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '批量转换失败'));
+                    }
+
+                    currentBatchJobId = data.id;
+                    batchJobFinished = false;
+                    renderBatchJob(data);
+
+                    if (batchPollTimer) {
+                        clearInterval(batchPollTimer);
+                    }
+                    batchPollTimer = setInterval(pollBatchStatus, 1500);
+                    pollBatchStatus();
+                } catch (error) {
+                    showError(batchError, error.message || '批量转换失败，请重试。');
+                    batchProgress.classList.remove('show');
+                    batchConvertBtn.disabled = false;
+                }
+            });
+
+            batchDownloadAllBtn.addEventListener('click', function() {
+                if (!currentBatchJobId) return;
+                window.location.href = `/batch/download/${encodeURIComponent(currentBatchJobId)}`;
+            });
+
+            batchClearBtn.addEventListener('click', resetBatchJob);
+
+            updateTextCounter();
+            renderBatchFiles();
+            batchDownloadAllBtn.disabled = true;
+            checkNetworkStatus();
             loadVoices();
+            setInterval(checkNetworkStatus, 30000);
         });
     </script>
 </body>
-</html> 
+</html>

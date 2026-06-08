@@ -3,7 +3,7 @@ import sys
 import webbrowser
 import threading
 import time
-from app import app
+from app import app, run_periodic_cleanup
 
 def open_browser():
     """等待服务器启动后打开浏览器"""
@@ -18,6 +18,8 @@ def main():
         static_folder = os.path.join(sys._MEIPASS, 'static')
         app.template_folder = template_folder
         app.static_folder = static_folder
+
+    run_periodic_cleanup(force=True)
 
     # 启动浏览器线程
     threading.Thread(target=open_browser, daemon=True).start()
