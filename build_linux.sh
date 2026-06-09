@@ -1,5 +1,7 @@
 #!/bin/bash
 
+APP_VERSION="v0.6"
+
 # 激活虚拟环境
 source venv/bin/activate
 
@@ -11,7 +13,8 @@ pyinstaller edge-tts-web.spec
 
 # 创建发布包
 cd dist
-tar -czf "Edge-TTS-Web-Linux.tar.gz" "Edge TTS Web"
+tar -czf "Edge-TTS-Web-${APP_VERSION}-Linux.tar.gz" "edge-tts-web"
 cd ..
 
-echo "Linux 打包完成！" 
+echo "Linux 打包完成！"
+echo "发布包: dist/Edge-TTS-Web-${APP_VERSION}-Linux.tar.gz"

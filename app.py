@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, send_file, jsonify
 import io
+import json
 import os
 import re
 import tempfile
@@ -13,7 +14,7 @@ from urllib.parse import urlparse
 
 app = Flask(__name__)
 
-APP_VERSION = "0.5"
+APP_VERSION = "0.6"
 MAX_TEXT_LENGTH = 200000
 MAX_CHUNK_LENGTH = 5000
 PREVIEW_TEXT_LENGTH = 300
@@ -53,6 +54,18 @@ SINGLE_RESULTS = {}
 SINGLE_RESULTS_LOCK = threading.Lock()
 CLEANUP_LOCK = threading.Lock()
 LAST_CLEANUP_AT = 0
+SETTINGS_LOCK = threading.Lock()
+DEFAULT_SETTINGS = {
+    "default_voice": "zh-CN-XiaoxiaoNeural",
+    "default_speech_rate": DEFAULT_SPEECH_RATE,
+    "proxy_url": "",
+    "history_retention_days": 7,
+    "temp_file_ttl_hours": 6,
+    "default_save_dir": "",
+    "auto_open_browser": True,
+    "chunk_length": MAX_CHUNK_LENGTH,
+}
+APP_SETTINGS = DEFAULT_SETTINGS.copy()
 
 # 定义可用的语音列表
 AVAILABLE_VOICES = [
@@ -116,6 +129,80 @@ def error_response(code, message, status_code=400, detail=None):
     if detail:
         payload["error"]["detail"] = detail
     return jsonify(payload), status_code
+
+def get_settings_path():
+    """返回本地设置文件路径。"""
+    configured_path = app.config.get("SETTINGS_PATH")
+    if configured_path:
+        return configured_path
+    return os.path.join(get_app_temp_dir(), "settings.json")
+
+def normalize_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+def normalize_int(value, fallback, minimum=None, maximum=None):
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = fallback
+    if minimum is not None:
+        normalized = max(minimum, normalized)
+    if maximum is not None:
+        normalized = min(maximum, normalized)
+    return normalized
+
+def normalize_settings(raw_settings):
+    """校验并标准化用户设置。"""
+    settings = DEFAULT_SETTINGS.copy()
+    if raw_settings:
+        settings.update(raw_settings)
+
+    settings["default_voice"] = validate_voice_id(settings.get("default_voice"))
+    settings["default_speech_rate"] = normalize_speech_rate(settings.get("default_speech_rate"))
+    settings["proxy_url"] = str(settings.get("proxy_url") or "").strip()
+    settings["history_retention_days"] = normalize_int(settings.get("history_retention_days"), 7, 1, 365)
+    settings["temp_file_ttl_hours"] = normalize_int(settings.get("temp_file_ttl_hours"), 6, 1, 168)
+    settings["default_save_dir"] = str(settings.get("default_save_dir") or "").strip()
+    settings["auto_open_browser"] = normalize_bool(settings.get("auto_open_browser", True))
+    settings["chunk_length"] = normalize_int(settings.get("chunk_length"), MAX_CHUNK_LENGTH, 500, MAX_CHUNK_LENGTH)
+    return settings
+
+def load_settings():
+    """从本地文件加载设置。"""
+    global APP_SETTINGS
+    settings_path = get_settings_path()
+    raw_settings = {}
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r", encoding="utf-8") as settings_file:
+                raw_settings = json.load(settings_file)
+        except (OSError, json.JSONDecodeError, ValueError):
+            raw_settings = {}
+
+    with SETTINGS_LOCK:
+        APP_SETTINGS = normalize_settings(raw_settings)
+        return APP_SETTINGS.copy()
+
+def save_settings(new_settings):
+    """保存本地设置。"""
+    global APP_SETTINGS
+    normalized_settings = normalize_settings(new_settings)
+    settings_path = get_settings_path()
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+
+    with SETTINGS_LOCK:
+        APP_SETTINGS = normalized_settings
+        with open(settings_path, "w", encoding="utf-8") as settings_file:
+            json.dump(APP_SETTINGS, settings_file, ensure_ascii=False, indent=2)
+        return APP_SETTINGS.copy()
+
+def get_settings():
+    with SETTINGS_LOCK:
+        return APP_SETTINGS.copy()
 
 def validate_voice_id(voice_id):
     """校验音色 ID 是否在当前白名单中。"""
@@ -185,6 +272,7 @@ def add_history_item(job):
     }
 
     with HISTORY_LOCK:
+        cleanup_history_items_locked()
         HISTORY_ITEMS.insert(0, history_item)
         del HISTORY_ITEMS[HISTORY_LIMIT:]
 
@@ -192,7 +280,17 @@ def add_history_item(job):
 
 def public_history_items():
     with HISTORY_LOCK:
+        cleanup_history_items_locked()
         return [item.copy() for item in HISTORY_ITEMS]
+
+def cleanup_history_items_locked():
+    """在 HISTORY_LOCK 内清理过期历史。"""
+    retention_seconds = get_settings().get("history_retention_days", 7) * 24 * 60 * 60
+    cutoff = time.time() - retention_seconds
+    HISTORY_ITEMS[:] = [
+        item for item in HISTORY_ITEMS
+        if item.get("finished_at", item.get("created_at", time.time())) >= cutoff
+    ]
 
 def get_app_temp_dir():
     """返回应用专用临时目录。"""
@@ -394,7 +492,8 @@ def update_text_job(job_id, updater):
 
 def create_text_job(text, voice, speech_rate):
     """创建异步文本转语音任务。"""
-    chunks = split_text_to_chunks(text, MAX_CHUNK_LENGTH)
+    chunk_length = get_settings().get("chunk_length", MAX_CHUNK_LENGTH)
+    chunks = split_text_to_chunks(text, chunk_length)
     if not chunks:
         raise ValueError("请输入要转换的文本。")
 
@@ -636,13 +735,26 @@ def is_proxy_available(proxy_url):
 def get_proxy_url():
     """返回 edge-tts 可用的代理配置。"""
     proxy_url = (
-        os.environ.get("EDGE_TTS_PROXY")
+        get_settings().get("proxy_url")
+        or os.environ.get("EDGE_TTS_PROXY")
         or os.environ.get("HTTPS_PROXY")
         or os.environ.get("HTTP_PROXY")
         or os.environ.get("https_proxy")
         or os.environ.get("http_proxy")
     )
     return proxy_url if is_proxy_available(proxy_url) else None
+
+def get_configured_proxy_url():
+    """返回用户或环境配置的代理地址，不检查可用性。"""
+    return (
+        get_settings().get("proxy_url")
+        or os.environ.get("EDGE_TTS_PROXY")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("http_proxy")
+        or ""
+    )
 
 def check_network_connectivity():
     """检查网络连接状态"""
@@ -651,6 +763,26 @@ def check_network_connectivity():
 
     # 检查是否能连接到Microsoft Edge TTS服务
     return can_connect("speech.platform.bing.com", 443, timeout=10)
+
+def collect_network_diagnostics():
+    """返回代理和 Edge TTS 服务诊断信息。"""
+    configured_proxy = get_configured_proxy_url()
+    proxy_available = is_proxy_available(configured_proxy) if configured_proxy else False
+    service_available = can_connect("speech.platform.bing.com", 443, timeout=10)
+    effective_proxy = configured_proxy if proxy_available else ""
+
+    return {
+        "version": APP_VERSION,
+        "proxy_configured": bool(configured_proxy),
+        "proxy_url": configured_proxy,
+        "proxy_available": proxy_available,
+        "effective_proxy": effective_proxy,
+        "edge_tts_host": "speech.platform.bing.com",
+        "edge_tts_available": service_available,
+        "network_connectivity": proxy_available or service_available,
+        "settings_path": get_settings_path(),
+        "temp_dir": get_app_temp_dir(),
+    }
 
 def normalize_speech_rate(rate_value):
     """校验并标准化语速倍数。"""
@@ -705,13 +837,36 @@ def update_favorite_voice(voice_id):
 @app.route('/health')
 def health_check():
     """健康检查接口"""
-    network_ok = check_network_connectivity()
+    diagnostics = collect_network_diagnostics()
+    network_ok = diagnostics["network_connectivity"]
     return jsonify({
         'version': APP_VERSION,
         'status': 'ok' if network_ok else 'network_error',
         'network_connectivity': network_ok,
+        'proxy_configured': diagnostics["proxy_configured"],
+        'proxy_available': diagnostics["proxy_available"],
+        'edge_tts_available': diagnostics["edge_tts_available"],
         'message': '服务正常' if network_ok else '网络连接异常，可能无法使用语音转换功能'
     })
+
+@app.route('/diagnostics')
+def diagnostics():
+    return jsonify(collect_network_diagnostics())
+
+@app.route('/settings', methods=['GET', 'POST'])
+def settings():
+    if request.method == 'GET':
+        return jsonify(get_settings())
+
+    data = request.get_json(silent=True) or {}
+    try:
+        updated_settings = save_settings(data)
+    except ValueError as e:
+        return error_response("invalid_settings", str(e), 400)
+    except OSError as e:
+        return error_response("settings_save_failed", f"设置保存失败：{str(e)}", 500)
+
+    return jsonify(updated_settings)
 
 @app.route('/preview', methods=['POST'])
 def preview_speech():
@@ -722,12 +877,12 @@ def preview_speech():
         return error_response("empty_text", "请输入要试听的文本。", 400)
 
     try:
-        voice = validate_voice_id(request.form.get('voice', 'zh-CN-XiaoxiaoNeural'))
+        voice = validate_voice_id(request.form.get('voice') or get_settings().get("default_voice"))
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
 
     try:
-        speech_rate = normalize_speech_rate(request.form.get('speech_rate', DEFAULT_SPEECH_RATE))
+        speech_rate = normalize_speech_rate(request.form.get('speech_rate') or get_settings().get("default_speech_rate"))
     except ValueError as e:
         return error_response("invalid_speech_rate", str(e), 400)
 
@@ -932,7 +1087,7 @@ def run_periodic_cleanup(force=False):
     cleanup_single_results()
     cleanup_old_jobs()
     cleanup_old_text_jobs()
-    cleanup_expired_audio_files()
+    cleanup_expired_audio_files(get_settings().get("temp_file_ttl_hours", 6) * 60 * 60)
 
 @app.before_request
 def cleanup_before_request():
@@ -1034,7 +1189,7 @@ def process_batch_job(job_id, prepared_files):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', settings=get_settings())
 
 @app.route('/convert', methods=['POST'])
 def convert():
@@ -1048,12 +1203,12 @@ def convert():
         return error_response("text_too_long", f"文本过长，最多支持 {MAX_TEXT_LENGTH} 字符。", 400)
 
     try:
-        voice = validate_voice_id(request.form.get('voice', 'zh-CN-XiaoxiaoNeural'))
+        voice = validate_voice_id(request.form.get('voice') or get_settings().get("default_voice"))
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
 
     try:
-        speech_rate = normalize_speech_rate(request.form.get('speech_rate', DEFAULT_SPEECH_RATE))
+        speech_rate = normalize_speech_rate(request.form.get('speech_rate') or get_settings().get("default_speech_rate"))
     except ValueError as e:
         return error_response("invalid_speech_rate", str(e), 400)
     
@@ -1209,12 +1364,12 @@ def batch_convert():
     run_periodic_cleanup(force=True)
 
     try:
-        voice = validate_voice_id(request.form.get('voice', 'zh-CN-XiaoxiaoNeural'))
+        voice = validate_voice_id(request.form.get('voice') or get_settings().get("default_voice"))
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
 
     try:
-        speech_rate = normalize_speech_rate(request.form.get('speech_rate', DEFAULT_SPEECH_RATE))
+        speech_rate = normalize_speech_rate(request.form.get('speech_rate') or get_settings().get("default_speech_rate"))
     except ValueError as e:
         return error_response("invalid_speech_rate", str(e), 400)
 
@@ -1401,6 +1556,8 @@ def download(file_id):
 @app.route('/download')
 def download_requires_token():
     return error_response("download_token_required", "下载链接已过期或格式不正确，请重新转换。", 404)
+
+load_settings()
 
 if __name__ == '__main__':
     run_periodic_cleanup(force=True)

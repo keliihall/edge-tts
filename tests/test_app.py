@@ -5,11 +5,17 @@ import time
 import pytest
 
 import app as app_module
+import run as run_module
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    app_module.app.config.update(TESTING=True, TEMP_AUDIO_DIR=str(tmp_path / "audio"))
+    app_module.app.config.update(
+        TESTING=True,
+        TEMP_AUDIO_DIR=str(tmp_path / "audio"),
+        SETTINGS_PATH=str(tmp_path / "settings.json"),
+    )
+    app_module.save_settings(app_module.DEFAULT_SETTINGS)
 
     with app_module.SINGLE_RESULTS_LOCK:
         app_module.SINGLE_RESULTS.clear()
@@ -26,6 +32,8 @@ def client(tmp_path, monkeypatch):
     with app_module.PREFERENCES_LOCK:
         app_module.USER_PREFERENCES["favorite_voices"] = []
         app_module.USER_PREFERENCES["recent_voices"] = []
+
+    app_module.save_settings(app_module.DEFAULT_SETTINGS)
 
     monkeypatch.setattr(app_module, "check_network_connectivity", lambda: True)
 
@@ -179,6 +187,67 @@ def test_voice_favorites_and_presets(client):
     assert any(preset["id"] == "story" for preset in presets)
 
 
+def test_settings_can_be_saved_and_used_as_defaults(client):
+    response = client.post(
+        "/settings",
+        json={
+            "default_voice": "zh-CN-XiaoyiNeural",
+            "default_speech_rate": "0.9",
+            "proxy_url": "http://127.0.0.1:7890",
+            "history_retention_days": 12,
+            "temp_file_ttl_hours": 3,
+            "default_save_dir": "/tmp",
+            "auto_open_browser": False,
+            "chunk_length": 1200,
+        },
+    )
+
+    assert response.status_code == 200
+    settings = response.get_json()
+    assert settings["default_voice"] == "zh-CN-XiaoyiNeural"
+    assert settings["default_speech_rate"] == "0.9"
+    assert settings["chunk_length"] == 1200
+    assert settings["auto_open_browser"] is False
+
+    convert_response = client.post("/convert", data={"text": "使用默认设置"})
+    assert convert_response.status_code == 202
+    data = convert_response.get_json()
+    assert data["voice"] == "zh-CN-XiaoyiNeural"
+    assert data["speech_rate"] == "0.9"
+
+
+def test_settings_reject_invalid_voice(client):
+    response = client.post("/settings", json={"default_voice": "bad-voice"})
+
+    assert response.status_code == 400
+    error = error_payload(response)
+    assert error["code"] == "invalid_settings"
+
+
+def test_diagnostics_reports_network_fields(client, monkeypatch):
+    def fake_can_connect(host, port, timeout=5):
+        return host == "speech.platform.bing.com"
+
+    monkeypatch.setattr(app_module, "can_connect", fake_can_connect)
+
+    response = client.get("/diagnostics")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["version"] == app_module.APP_VERSION
+    assert data["edge_tts_available"] is True
+    assert data["network_connectivity"] is True
+    assert data["settings_path"].endswith("settings.json")
+
+
+def test_find_available_port_skips_busy_port(monkeypatch):
+    busy_ports = {5013}
+
+    monkeypatch.setattr(run_module, "can_connect", lambda port, timeout=0.5: port in busy_ports)
+
+    assert run_module.find_available_port(5013) == 5014
+
+
 def test_download_uses_token_route_and_rejects_path_query(client):
     with app_module.create_temp_audio_file() as tmp_file:
         tmp_file.write(b"legacy token audio")
@@ -270,6 +339,29 @@ def test_finished_text_job_records_history(client):
 
     delete_response = client.delete(f"/history/{history[0]['id']}")
     assert delete_response.status_code == 200
+    assert client.get("/history").get_json() == []
+
+
+def test_history_retention_setting_removes_old_items(client):
+    app_module.save_settings({**app_module.DEFAULT_SETTINGS, "history_retention_days": 1})
+    with app_module.HISTORY_LOCK:
+        app_module.HISTORY_ITEMS.append({
+            "id": "old",
+            "job_id": "job",
+            "title": "old",
+            "summary": "",
+            "voice": "zh-CN-XiaoxiaoNeural",
+            "speech_rate": "1.0",
+            "text_length": 1,
+            "total": 1,
+            "success_count": 1,
+            "failed_count": 0,
+            "created_at": time.time() - 3 * 24 * 60 * 60,
+            "finished_at": time.time() - 3 * 24 * 60 * 60,
+            "download_url": "/jobs/job/download",
+            "audio_url": None,
+        })
+
     assert client.get("/history").get_json() == []
 
 

@@ -465,6 +465,55 @@ audio {
     margin-top: 24px;
 }
 
+.settings-section {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.settings-grid label {
+    margin-bottom: 0;
+}
+
+.checkbox-setting {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 42px;
+}
+
+.checkbox-setting input {
+    width: 16px;
+    height: 16px;
+}
+
+.diagnostics-panel {
+    margin-top: 16px;
+    padding: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background-color: var(--muted-surface);
+    color: var(--muted-text);
+    font-size: 14px;
+}
+
+.diagnostics-row {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 10px;
+    padding: 4px 0;
+}
+
+.diagnostics-row span {
+    overflow-wrap: anywhere;
+}
+
 .row-actions {
     display: flex;
     flex: 0 0 auto;
@@ -573,6 +622,11 @@ audio {
 
     .row-actions {
         justify-content: stretch;
+    }
+
+    .settings-grid,
+    .diagnostics-row {
+        grid-template-columns: 1fr;
     }
 
     .file-name {

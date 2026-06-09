@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文本转语音工具 v0.5</title>
+    <title>文本转语音工具 v0.6</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
         <header class="app-header">
-            <h1>文本转语音工具 <span class="version-badge">v0.5</span></h1>
+            <h1>文本转语音工具 <span class="version-badge">v0.6</span></h1>
         </header>
 
         <div class="network-status" id="network-status">
@@ -147,6 +147,59 @@
             </div>
             <div class="batch-results-list empty" id="history-list">暂无历史记录</div>
         </section>
+
+        <section class="settings-section" id="settings-section">
+            <div class="result-header">
+                <h2>设置与诊断</h2>
+                <button id="diagnostics-btn" class="btn small-btn secondary-btn" type="button">重新诊断</button>
+            </div>
+            <div class="settings-grid">
+                <label>
+                    默认音色
+                    <select id="settings-default-voice" class="voice-select"></select>
+                </label>
+                <label>
+                    默认语速
+                    <select id="settings-default-rate" class="speed-select">
+                        <option value="0.75">0.75x</option>
+                        <option value="0.9">0.9x</option>
+                        <option value="1.0">1.0x</option>
+                        <option value="1.1">1.1x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2.0">2.0x</option>
+                    </select>
+                </label>
+                <label>
+                    代理地址
+                    <input type="text" id="settings-proxy" class="filename-input" placeholder="http://127.0.0.1:7890">
+                </label>
+                <label>
+                    默认保存目录
+                    <input type="text" id="settings-save-dir" class="filename-input" placeholder="留空使用浏览器默认下载目录">
+                </label>
+                <label>
+                    历史保留天数
+                    <input type="number" id="settings-history-days" class="filename-input" min="1" max="365">
+                </label>
+                <label>
+                    临时文件保留小时
+                    <input type="number" id="settings-temp-hours" class="filename-input" min="1" max="168">
+                </label>
+                <label>
+                    长文本分段字数
+                    <input type="number" id="settings-chunk-length" class="filename-input" min="500" max="5000">
+                </label>
+                <label class="checkbox-setting">
+                    <input type="checkbox" id="settings-auto-open">
+                    启动后自动打开浏览器
+                </label>
+            </div>
+            <div class="action-row">
+                <button id="settings-save-btn" class="btn" type="button">保存设置</button>
+            </div>
+            <div class="diagnostics-panel" id="diagnostics-panel">等待诊断</div>
+        </section>
     </div>
 
     <script>
@@ -197,6 +250,17 @@
             const batchDownloadAllBtn = document.getElementById('batch-download-all-btn');
             const historyList = document.getElementById('history-list');
             const historyRefreshBtn = document.getElementById('history-refresh-btn');
+            const diagnosticsBtn = document.getElementById('diagnostics-btn');
+            const diagnosticsPanel = document.getElementById('diagnostics-panel');
+            const settingsDefaultVoice = document.getElementById('settings-default-voice');
+            const settingsDefaultRate = document.getElementById('settings-default-rate');
+            const settingsProxy = document.getElementById('settings-proxy');
+            const settingsSaveDir = document.getElementById('settings-save-dir');
+            const settingsHistoryDays = document.getElementById('settings-history-days');
+            const settingsTempHours = document.getElementById('settings-temp-hours');
+            const settingsChunkLength = document.getElementById('settings-chunk-length');
+            const settingsAutoOpen = document.getElementById('settings-auto-open');
+            const settingsSaveBtn = document.getElementById('settings-save-btn');
 
             let currentSingleJobId = '';
             let currentSingleJob = null;
@@ -205,6 +269,7 @@
             let voices = [];
             let presets = [];
             let preferences = { favorite_voices: [], recent_voices: [] };
+            let appSettings = {};
             let networkStatus = 'checking';
             let selectedBatchFiles = [];
             let currentBatchJobId = '';
@@ -296,6 +361,7 @@
                     voices = await response.json();
                     renderVoiceOptions();
                     updateVoiceInfo(voices.find(voice => voice.id === voiceSelect.value) || voices[0]);
+                    renderSettings();
                 } catch (error) {
                     console.error('Failed to load voices:', error);
                     voiceSelect.innerHTML = '<option value="">加载失败</option>';
@@ -314,6 +380,106 @@
                     });
                 } catch (error) {
                     console.error('Failed to load presets:', error);
+                }
+            }
+
+            async function loadSettings() {
+                try {
+                    const response = await fetch('/settings');
+                    appSettings = await response.json();
+                    renderSettings();
+                } catch (error) {
+                    diagnosticsPanel.textContent = '设置加载失败';
+                }
+            }
+
+            function renderSettings() {
+                if (!voices.length) return;
+
+                settingsDefaultVoice.innerHTML = '';
+                voices.forEach(voice => {
+                    const option = document.createElement('option');
+                    option.value = voice.id;
+                    option.textContent = voice.name;
+                    settingsDefaultVoice.appendChild(option);
+                });
+
+                settingsDefaultVoice.value = appSettings.default_voice || 'zh-CN-XiaoxiaoNeural';
+                settingsDefaultRate.value = appSettings.default_speech_rate || '1.0';
+                settingsProxy.value = appSettings.proxy_url || '';
+                settingsSaveDir.value = appSettings.default_save_dir || '';
+                settingsHistoryDays.value = appSettings.history_retention_days || 7;
+                settingsTempHours.value = appSettings.temp_file_ttl_hours || 6;
+                settingsChunkLength.value = appSettings.chunk_length || 5000;
+                settingsAutoOpen.checked = appSettings.auto_open_browser !== false;
+
+                if (appSettings.default_voice && !voiceSelect.value) {
+                    voiceSelect.value = appSettings.default_voice;
+                    updateVoiceInfo(voices.find(voice => voice.id === appSettings.default_voice));
+                }
+                if (appSettings.default_speech_rate) {
+                    speechRateSelect.value = appSettings.default_speech_rate;
+                }
+            }
+
+            async function saveSettings() {
+                const payload = {
+                    default_voice: settingsDefaultVoice.value,
+                    default_speech_rate: settingsDefaultRate.value,
+                    proxy_url: settingsProxy.value.trim(),
+                    default_save_dir: settingsSaveDir.value.trim(),
+                    history_retention_days: Number(settingsHistoryDays.value || 7),
+                    temp_file_ttl_hours: Number(settingsTempHours.value || 6),
+                    chunk_length: Number(settingsChunkLength.value || 5000),
+                    auto_open_browser: settingsAutoOpen.checked
+                };
+
+                try {
+                    settingsSaveBtn.disabled = true;
+                    const response = await fetch('/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '设置保存失败'));
+                    }
+                    appSettings = data;
+                    renderSettings();
+                    diagnosticsPanel.textContent = '设置已保存';
+                    checkNetworkStatus();
+                    loadDiagnostics();
+                } catch (error) {
+                    diagnosticsPanel.textContent = error.message || '设置保存失败';
+                } finally {
+                    settingsSaveBtn.disabled = false;
+                }
+            }
+
+            async function loadDiagnostics() {
+                try {
+                    const response = await fetch('/diagnostics');
+                    const data = await response.json();
+                    diagnosticsPanel.innerHTML = '';
+                    const rows = [
+                        ['版本', data.version],
+                        ['代理配置', data.proxy_configured ? data.proxy_url : '未配置'],
+                        ['代理可用', data.proxy_available ? '是' : '否'],
+                        ['Edge TTS 服务', data.edge_tts_available ? '可连接' : '不可连接'],
+                        ['整体网络', data.network_connectivity ? '可用' : '异常'],
+                        ['设置文件', data.settings_path],
+                        ['临时目录', data.temp_dir]
+                    ];
+
+                    rows.forEach(([label, value]) => {
+                        const line = document.createElement('div');
+                        line.className = 'diagnostics-row';
+                        line.innerHTML = `<strong>${label}</strong><span>${value}</span>`;
+                        diagnosticsPanel.appendChild(line);
+                    });
+                } catch (error) {
+                    diagnosticsPanel.textContent = '诊断失败';
                 }
             }
 
@@ -1050,6 +1216,8 @@
             batchClearBtn.addEventListener('click', resetBatchJob);
 
             historyRefreshBtn.addEventListener('click', loadHistory);
+            settingsSaveBtn.addEventListener('click', saveSettings);
+            diagnosticsBtn.addEventListener('click', loadDiagnostics);
 
             historyList.addEventListener('click', async function(event) {
                 const audioUrl = event.target.dataset.historyAudio;
@@ -1075,9 +1243,11 @@
             renderBatchFiles();
             batchDownloadAllBtn.disabled = true;
             checkNetworkStatus();
+            loadSettings();
             loadPresets();
             loadVoices();
             loadHistory();
+            loadDiagnostics();
             setInterval(checkNetworkStatus, 30000);
         });
     </script>
