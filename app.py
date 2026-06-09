@@ -13,9 +13,10 @@ from urllib.parse import urlparse
 
 app = Flask(__name__)
 
-APP_VERSION = "0.4"
+APP_VERSION = "0.5"
 MAX_TEXT_LENGTH = 200000
 MAX_CHUNK_LENGTH = 5000
+PREVIEW_TEXT_LENGTH = 300
 MAX_BATCH_FILES = 20
 MAX_BATCH_TEXT_LENGTH = 20000
 MAX_RETRIES = 3
@@ -40,6 +41,14 @@ BATCH_LOCK = threading.Lock()
 TEXT_JOB_TTL_SECONDS = 6 * 60 * 60
 TEXT_JOBS = {}
 TEXT_JOB_LOCK = threading.Lock()
+HISTORY_LIMIT = 50
+HISTORY_ITEMS = []
+HISTORY_LOCK = threading.Lock()
+USER_PREFERENCES = {
+    "favorite_voices": [],
+    "recent_voices": [],
+}
+PREFERENCES_LOCK = threading.Lock()
 SINGLE_RESULTS = {}
 SINGLE_RESULTS_LOCK = threading.Lock()
 CLEANUP_LOCK = threading.Lock()
@@ -63,6 +72,38 @@ AVAILABLE_VOICES = [
     {"id": "zh-TW-YunJheNeural", "name": "云哲", "gender": "男", "style": "台湾腔，亲和"}
 ]
 AVAILABLE_VOICE_IDS = {voice["id"] for voice in AVAILABLE_VOICES}
+VOICE_PRESETS = [
+    {
+        "id": "short_video",
+        "name": "短视频口播",
+        "voice": "zh-CN-YunxiNeural",
+        "speech_rate": "1.1",
+    },
+    {
+        "id": "news",
+        "name": "新闻播报",
+        "voice": "zh-CN-YunyangNeural",
+        "speech_rate": "1.0",
+    },
+    {
+        "id": "story",
+        "name": "小说旁白",
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "speech_rate": "0.9",
+    },
+    {
+        "id": "kids",
+        "name": "儿童故事",
+        "voice": "zh-CN-XiaoyiNeural",
+        "speech_rate": "0.9",
+    },
+    {
+        "id": "cantonese",
+        "name": "粤语口播",
+        "voice": "zh-HK-HiuGaaiNeural",
+        "speech_rate": "1.0",
+    },
+]
 
 def error_response(code, message, status_code=400, detail=None):
     """返回统一的 API 错误格式。"""
@@ -82,6 +123,76 @@ def validate_voice_id(voice_id):
     if normalized_voice_id not in AVAILABLE_VOICE_IDS:
         raise ValueError("不支持的语音角色，请从列表中选择可用音色。")
     return normalized_voice_id
+
+def voice_by_id(voice_id):
+    return next((voice for voice in AVAILABLE_VOICES if voice["id"] == voice_id), None)
+
+def remember_recent_voice(voice_id):
+    """记录最近使用音色。"""
+    if voice_id not in AVAILABLE_VOICE_IDS:
+        return
+    with PREFERENCES_LOCK:
+        recent = [current for current in USER_PREFERENCES["recent_voices"] if current != voice_id]
+        recent.insert(0, voice_id)
+        USER_PREFERENCES["recent_voices"] = recent[:8]
+
+def public_preferences():
+    with PREFERENCES_LOCK:
+        return {
+            "favorite_voices": list(USER_PREFERENCES["favorite_voices"]),
+            "recent_voices": list(USER_PREFERENCES["recent_voices"]),
+        }
+
+def set_favorite_voice(voice_id, favorite):
+    validate_voice_id(voice_id)
+    with PREFERENCES_LOCK:
+        favorites = [current for current in USER_PREFERENCES["favorite_voices"] if current != voice_id]
+        if favorite:
+            favorites.insert(0, voice_id)
+        USER_PREFERENCES["favorite_voices"] = favorites
+        return {
+            "favorite_voices": list(USER_PREFERENCES["favorite_voices"]),
+            "recent_voices": list(USER_PREFERENCES["recent_voices"]),
+        }
+
+def history_summary(text, limit=80):
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    return normalized[:limit]
+
+def add_history_item(job):
+    """记录已生成任务，避免同一任务重复写入。"""
+    if not job.get("success_count"):
+        return
+    if job.get("history_recorded"):
+        return
+
+    first_done_item = next((item for item in job.get("items", []) if item.get("status") == "done"), None)
+    history_item = {
+        "id": uuid.uuid4().hex,
+        "job_id": job["id"],
+        "title": job.get("download_name") or "speech",
+        "summary": job.get("text_summary") or "",
+        "voice": job["voice"],
+        "speech_rate": job["speech_rate"],
+        "text_length": job["text_length"],
+        "total": job.get("total", 0),
+        "success_count": job.get("success_count", 0),
+        "failed_count": job.get("failed_count", 0),
+        "created_at": job.get("created_at"),
+        "finished_at": job.get("finished_at") or time.time(),
+        "download_url": f"/jobs/{job['id']}/download",
+        "audio_url": f"/jobs/{job['id']}/items/{first_done_item['id']}/audio" if first_done_item else None,
+    }
+
+    with HISTORY_LOCK:
+        HISTORY_ITEMS.insert(0, history_item)
+        del HISTORY_ITEMS[HISTORY_LIMIT:]
+
+    job["history_recorded"] = True
+
+def public_history_items():
+    with HISTORY_LOCK:
+        return [item.copy() for item in HISTORY_ITEMS]
 
 def get_app_temp_dir():
     """返回应用专用临时目录。"""
@@ -240,6 +351,8 @@ def public_text_job(job):
         "download_name": job["download_name"],
         "downloadable": job["success_count"] > 0,
         "cancel_requested": job.get("cancel_requested", False),
+        "summary": job.get("text_summary", ""),
+        "audio_url": first_text_job_audio_url(job),
         "items": [
             {
                 "id": item["id"],
@@ -253,6 +366,12 @@ def public_text_job(job):
             for item in job["items"]
         ],
     }
+
+def first_text_job_audio_url(job):
+    first_done_item = next((item for item in job.get("items", []) if item.get("status") == "done"), None)
+    if not first_done_item:
+        return None
+    return f"/jobs/{job['id']}/items/{first_done_item['id']}/audio"
 
 def get_text_job(job_id):
     """线程安全读取文本任务。"""
@@ -304,6 +423,7 @@ def create_text_job(text, voice, speech_rate):
         "voice": voice,
         "speech_rate": speech_rate,
         "text_length": len(text),
+        "text_summary": history_summary(text),
         "download_name": download_name,
         "total": len(items),
         "completed": 0,
@@ -315,6 +435,7 @@ def create_text_job(text, voice, speech_rate):
         "started_at": None,
         "finished_at": None,
         "cancel_requested": False,
+        "history_recorded": False,
         "items": items,
     }
     recompute_text_job_counts(job)
@@ -425,6 +546,8 @@ def process_text_job(job_id, only_item_id=None):
         job["status"] = terminal_text_job_status(job)
         if job["status"] in ("finished", "cancelled"):
             job["finished_at"] = time.time()
+        if job["status"] == "finished" and job.get("success_count"):
+            add_history_item(job)
         job["updated_at"] = time.time()
 
 def get_single_result(file_id):
@@ -548,7 +671,36 @@ def edge_rate_from_speech_rate(rate_value):
 @app.route('/voices')
 def get_voices():
     """获取可用的语音列表"""
-    return jsonify(AVAILABLE_VOICES)
+    preferences = public_preferences()
+    favorite_set = set(preferences["favorite_voices"])
+    recent_set = set(preferences["recent_voices"])
+    voices = [
+        {
+            **voice,
+            "favorite": voice["id"] in favorite_set,
+            "recent": voice["id"] in recent_set,
+        }
+        for voice in AVAILABLE_VOICES
+    ]
+    return jsonify(voices)
+
+@app.route('/presets')
+def get_presets():
+    return jsonify(VOICE_PRESETS)
+
+@app.route('/preferences')
+def get_preferences():
+    return jsonify(public_preferences())
+
+@app.route('/preferences/favorites/<voice_id>', methods=['POST'])
+def update_favorite_voice(voice_id):
+    data = request.get_json(silent=True) or {}
+    favorite = bool(data.get("favorite", True))
+    try:
+        preferences = set_favorite_voice(voice_id, favorite)
+    except ValueError as e:
+        return error_response("invalid_voice", str(e), 400)
+    return jsonify(preferences)
 
 @app.route('/health')
 def health_check():
@@ -560,6 +712,57 @@ def health_check():
         'network_connectivity': network_ok,
         'message': '服务正常' if network_ok else '网络连接异常，可能无法使用语音转换功能'
     })
+
+@app.route('/preview', methods=['POST'])
+def preview_speech():
+    run_periodic_cleanup()
+
+    text = (request.form.get('text') or '').strip()
+    if not text:
+        return error_response("empty_text", "请输入要试听的文本。", 400)
+
+    try:
+        voice = validate_voice_id(request.form.get('voice', 'zh-CN-XiaoxiaoNeural'))
+    except ValueError as e:
+        return error_response("invalid_voice", str(e), 400)
+
+    try:
+        speech_rate = normalize_speech_rate(request.form.get('speech_rate', DEFAULT_SPEECH_RATE))
+    except ValueError as e:
+        return error_response("invalid_speech_rate", str(e), 400)
+
+    if not check_network_connectivity():
+        return error_response("network_unavailable", "网络连接异常，无法连接到语音服务。请检查网络连接后重试。", 503)
+
+    preview_text = text[:PREVIEW_TEXT_LENGTH]
+    try:
+        audio_path = generate_speech_with_retries(preview_text, voice, speech_rate)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_id = register_single_result(audio_path, f"preview_{timestamp}.mp3")
+        remember_recent_voice(voice)
+        return jsonify({
+            "file_id": file_id,
+            "audio_url": f"/audio/{file_id}",
+            "download_url": f"/download/{file_id}",
+            "text_length": len(preview_text),
+            "voice": voice,
+            "speech_rate": speech_rate,
+        })
+    except Exception as e:
+        error_msg = error_message_from_exception(e)
+        return error_response("preview_generation_failed", error_msg, get_error_status_code(error_msg))
+
+@app.route('/audio/<file_id>')
+def preview_audio(file_id):
+    result = get_single_result(file_id)
+    if not result:
+        return error_response("audio_result_not_found", "音频文件不存在或已过期。", 404)
+
+    audio_path = result.get("audio_path")
+    if not audio_path or not is_managed_audio_path(audio_path) or not os.path.exists(audio_path):
+        return error_response("audio_file_missing", "音频文件不存在或已过期。", 404)
+
+    return send_file(audio_path, mimetype='audio/mpeg')
 
 def generate_speech(text, voice="zh-CN-XiaoxiaoNeural", speech_rate=DEFAULT_SPEECH_RATE):
     """使用 edge-tts Python API 生成语音"""
@@ -860,6 +1063,7 @@ def convert():
 
     try:
         job = create_text_job(text, voice, speech_rate)
+        remember_recent_voice(voice)
         response_data = public_text_job(job)
         worker = threading.Thread(target=process_text_job, args=(job["id"],), daemon=True)
         worker.start()
@@ -967,6 +1171,38 @@ def text_job_download(job_id):
         download_name=zip_name,
         mimetype='application/zip'
     )
+
+@app.route('/jobs/<job_id>/items/<item_id>/audio')
+def text_job_item_audio(job_id, item_id):
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return error_response("text_job_not_found", "文本任务不存在或已过期。", 404)
+        item = next((candidate.copy() for candidate in job["items"] if candidate["id"] == item_id), None)
+
+    if not item or item.get("status") != "done":
+        return error_response("audio_not_ready", "音频文件尚未生成或已不可用。", 404)
+
+    audio_path = item.get("audio_path")
+    if not audio_path or not is_managed_audio_path(audio_path) or not os.path.exists(audio_path):
+        return error_response("audio_file_missing", "音频文件不存在或已过期。", 404)
+
+    return send_file(audio_path, mimetype='audio/mpeg')
+
+@app.route('/history')
+def history_list():
+    return jsonify(public_history_items())
+
+@app.route('/history/<history_id>', methods=['DELETE'])
+def history_delete(history_id):
+    with HISTORY_LOCK:
+        before_count = len(HISTORY_ITEMS)
+        HISTORY_ITEMS[:] = [item for item in HISTORY_ITEMS if item["id"] != history_id]
+        deleted = len(HISTORY_ITEMS) != before_count
+
+    if not deleted:
+        return error_response("history_item_not_found", "历史记录不存在。", 404)
+    return jsonify({"deleted": True})
 
 @app.route('/batch/convert', methods=['POST'])
 def batch_convert():

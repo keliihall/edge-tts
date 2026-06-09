@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文本转语音工具 v0.4</title>
+    <title>文本转语音工具 v0.5</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
         <header class="app-header">
-            <h1>文本转语音工具 <span class="version-badge">v0.4</span></h1>
+            <h1>文本转语音工具 <span class="version-badge">v0.5</span></h1>
         </header>
 
         <div class="network-status" id="network-status">
@@ -19,12 +19,22 @@
 
         <div class="form-group voice-selection">
             <label for="voice-select">选择语音</label>
+            <div class="voice-tools">
+                <input type="search" id="voice-search" class="filename-input" placeholder="搜索音色、风格或地区">
+                <button id="favorite-voice-btn" class="btn secondary-btn small-btn" type="button">收藏</button>
+            </div>
             <select id="voice-select" class="voice-select">
                 <option value="">加载中...</option>
             </select>
             <div class="voice-info">
                 <span class="gender"></span>
                 <span class="style"></span>
+            </div>
+            <div class="speed-selection">
+                <label for="preset-select">场景预设</label>
+                <select id="preset-select" class="speed-select">
+                    <option value="">自定义</option>
+                </select>
             </div>
             <div class="speed-selection">
                 <label for="speech-rate-select">语速</label>
@@ -56,7 +66,12 @@
 
             <div class="action-row">
                 <button id="convert-btn" class="btn">转换为语音</button>
+                <button id="preview-btn" class="btn secondary-btn" type="button">试听</button>
                 <button id="single-cancel-btn" class="btn secondary-btn" type="button" disabled>取消任务</button>
+            </div>
+
+            <div class="preview-section" id="preview-section">
+                <audio id="preview-audio" controls></audio>
             </div>
 
             <div class="loading" id="single-loading">
@@ -86,6 +101,7 @@
                 <div class="form-group">
                     <input type="text" id="filename-input" class="filename-input" placeholder="输入保存的文件名（不需要.mp3后缀）">
                 </div>
+                <audio id="result-audio" controls></audio>
                 <button id="download-btn" class="btn">下载音频</button>
             </div>
         </section>
@@ -123,6 +139,14 @@
                 <div class="batch-results-list" id="batch-results-list"></div>
             </div>
         </section>
+
+        <section class="history-section" id="history-section">
+            <div class="result-header">
+                <h2>最近生成</h2>
+                <button id="history-refresh-btn" class="btn small-btn secondary-btn" type="button">刷新</button>
+            </div>
+            <div class="batch-results-list empty" id="history-list">暂无历史记录</div>
+        </section>
     </div>
 
     <script>
@@ -132,8 +156,15 @@
             const textInput = document.getElementById('text-input');
             const textCounter = document.getElementById('text-counter');
             const voiceSelect = document.getElementById('voice-select');
+            const voiceSearch = document.getElementById('voice-search');
+            const favoriteVoiceBtn = document.getElementById('favorite-voice-btn');
+            const presetSelect = document.getElementById('preset-select');
             const speechRateSelect = document.getElementById('speech-rate-select');
             const convertBtn = document.getElementById('convert-btn');
+            const previewBtn = document.getElementById('preview-btn');
+            const previewSection = document.getElementById('preview-section');
+            const previewAudio = document.getElementById('preview-audio');
+            const resultAudio = document.getElementById('result-audio');
             const singleCancelBtn = document.getElementById('single-cancel-btn');
             const singleProgress = document.getElementById('single-progress');
             const singleProgressBar = document.getElementById('single-progress-bar');
@@ -164,12 +195,16 @@
             const batchResultSection = document.getElementById('batch-result-section');
             const batchResultsList = document.getElementById('batch-results-list');
             const batchDownloadAllBtn = document.getElementById('batch-download-all-btn');
+            const historyList = document.getElementById('history-list');
+            const historyRefreshBtn = document.getElementById('history-refresh-btn');
 
             let currentSingleJobId = '';
             let currentSingleJob = null;
             let singlePollTimer = null;
             let defaultDownloadName = '';
             let voices = [];
+            let presets = [];
+            let preferences = { favorite_voices: [], recent_voices: [] };
             let networkStatus = 'checking';
             let selectedBatchFiles = [];
             let currentBatchJobId = '';
@@ -255,31 +290,87 @@
 
             async function loadVoices() {
                 try {
+                    const preferencesResponse = await fetch('/preferences');
+                    preferences = await preferencesResponse.json();
                     const response = await fetch('/voices');
                     voices = await response.json();
-                    voiceSelect.innerHTML = '';
-
-                    voices.forEach(voice => {
-                        const option = document.createElement('option');
-                        option.value = voice.id;
-                        option.textContent = voice.name;
-                        voiceSelect.appendChild(option);
-                    });
-
-                    updateVoiceInfo(voices[0]);
+                    renderVoiceOptions();
+                    updateVoiceInfo(voices.find(voice => voice.id === voiceSelect.value) || voices[0]);
                 } catch (error) {
                     console.error('Failed to load voices:', error);
                     voiceSelect.innerHTML = '<option value="">加载失败</option>';
                 }
             }
 
+            async function loadPresets() {
+                try {
+                    const response = await fetch('/presets');
+                    presets = await response.json();
+                    presets.forEach(preset => {
+                        const option = document.createElement('option');
+                        option.value = preset.id;
+                        option.textContent = preset.name;
+                        presetSelect.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Failed to load presets:', error);
+                }
+            }
+
+            function renderVoiceOptions() {
+                const previousValue = voiceSelect.value;
+                const query = voiceSearch.value.trim().toLowerCase();
+                const favoriteSet = new Set(preferences.favorite_voices || []);
+                const recentSet = new Set(preferences.recent_voices || []);
+
+                const filteredVoices = voices
+                    .filter(voice => {
+                        if (!query) return true;
+                        return [voice.name, voice.id, voice.gender, voice.style]
+                            .join(' ')
+                            .toLowerCase()
+                            .includes(query);
+                    })
+                    .sort((a, b) => {
+                        const aFavorite = favoriteSet.has(a.id) ? 1 : 0;
+                        const bFavorite = favoriteSet.has(b.id) ? 1 : 0;
+                        if (aFavorite !== bFavorite) return bFavorite - aFavorite;
+                        const aRecent = recentSet.has(a.id) ? 1 : 0;
+                        const bRecent = recentSet.has(b.id) ? 1 : 0;
+                        if (aRecent !== bRecent) return bRecent - aRecent;
+                        return a.name.localeCompare(b.name, 'zh-Hans-CN');
+                    });
+
+                voiceSelect.innerHTML = '';
+
+                filteredVoices.forEach(voice => {
+                    const option = document.createElement('option');
+                    option.value = voice.id;
+                    const markers = [
+                        favoriteSet.has(voice.id) ? '★' : '',
+                        recentSet.has(voice.id) ? '最近' : ''
+                    ].filter(Boolean).join(' ');
+                    option.textContent = markers ? `${markers} ${voice.name}` : voice.name;
+                    voiceSelect.appendChild(option);
+                });
+
+                if (filteredVoices.some(voice => voice.id === previousValue)) {
+                    voiceSelect.value = previousValue;
+                }
+
+                updateVoiceInfo(voices.find(voice => voice.id === voiceSelect.value));
+            }
+
             function updateVoiceInfo(voice) {
                 if (voice) {
                     genderSpan.textContent = `性别：${voice.gender}`;
                     styleSpan.textContent = `风格：${voice.style}`;
+                    const favoriteSet = new Set(preferences.favorite_voices || []);
+                    favoriteVoiceBtn.textContent = favoriteSet.has(voice.id) ? '取消收藏' : '收藏';
                 } else {
                     genderSpan.textContent = '';
                     styleSpan.textContent = '';
+                    favoriteVoiceBtn.textContent = '收藏';
                 }
             }
 
@@ -370,6 +461,7 @@
                 singleCancelBtn.disabled = !['queued', 'processing'].includes(job.status);
                 singleRetryFailedBtn.disabled = job.failed_count === 0 || job.status === 'processing';
                 downloadSection.classList.toggle('show', job.downloadable && job.status !== 'processing');
+                updateResultAudio(job);
 
                 if (job.download_name && !filenameInput.value.trim()) {
                     filenameInput.value = job.download_name;
@@ -438,6 +530,7 @@
                         singleLoading.classList.remove('show');
                         convertBtn.disabled = false;
                         singleCancelBtn.disabled = true;
+                        loadHistory();
                         if (singlePollTimer) {
                             clearInterval(singlePollTimer);
                             singlePollTimer = null;
@@ -481,6 +574,85 @@
                 } catch (error) {
                     showError(singleError, error.message || '重试失败');
                 }
+            }
+
+            function updateResultAudio(job) {
+                if (job && job.audio_url) {
+                    resultAudio.src = job.audio_url;
+                    resultAudio.style.display = 'block';
+                } else {
+                    resultAudio.removeAttribute('src');
+                    resultAudio.style.display = 'none';
+                }
+            }
+
+            async function loadHistory() {
+                try {
+                    const response = await fetch('/history');
+                    const items = await response.json();
+                    renderHistory(items);
+                } catch (error) {
+                    historyList.classList.add('empty');
+                    historyList.textContent = '历史记录加载失败';
+                }
+            }
+
+            function renderHistory(items) {
+                historyList.innerHTML = '';
+                historyList.classList.toggle('empty', items.length === 0);
+
+                if (items.length === 0) {
+                    historyList.textContent = '暂无历史记录';
+                    return;
+                }
+
+                items.forEach(item => {
+                    const row = document.createElement('div');
+                    row.className = 'result-row done';
+
+                    const meta = document.createElement('div');
+                    meta.className = 'result-meta';
+
+                    const title = document.createElement('span');
+                    title.className = 'file-name';
+                    title.textContent = item.title;
+
+                    const detail = document.createElement('span');
+                    detail.className = 'file-size';
+                    detail.textContent = `${item.summary || '无摘要'} · ${item.text_length} 字 · 成功 ${item.success_count}/${item.total}`;
+
+                    meta.appendChild(title);
+                    meta.appendChild(detail);
+
+                    const actions = document.createElement('div');
+                    actions.className = 'row-actions';
+
+                    if (item.audio_url) {
+                        const playButton = document.createElement('button');
+                        playButton.type = 'button';
+                        playButton.className = 'btn small-btn secondary-btn';
+                        playButton.dataset.historyAudio = item.audio_url;
+                        playButton.textContent = '播放';
+                        actions.appendChild(playButton);
+                    }
+
+                    const downloadLink = document.createElement('a');
+                    downloadLink.className = 'btn small-btn';
+                    downloadLink.href = item.download_url;
+                    downloadLink.textContent = '下载';
+                    actions.appendChild(downloadLink);
+
+                    const deleteButton = document.createElement('button');
+                    deleteButton.type = 'button';
+                    deleteButton.className = 'btn small-btn secondary-btn';
+                    deleteButton.dataset.historyDelete = item.id;
+                    deleteButton.textContent = '删除';
+                    actions.appendChild(deleteButton);
+
+                    row.appendChild(meta);
+                    row.appendChild(actions);
+                    historyList.appendChild(row);
+                });
             }
 
             function resetBatchJob() {
@@ -596,6 +768,51 @@
                 updateVoiceInfo(selectedVoice);
             });
 
+            voiceSearch.addEventListener('input', renderVoiceOptions);
+
+            favoriteVoiceBtn.addEventListener('click', async function() {
+                const selectedVoice = voiceSelect.value;
+                if (!selectedVoice) return;
+                const favoriteSet = new Set(preferences.favorite_voices || []);
+                const nextFavorite = !favoriteSet.has(selectedVoice);
+
+                try {
+                    const response = await fetch(`/preferences/favorites/${encodeURIComponent(selectedVoice)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ favorite: nextFavorite })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '收藏失败'));
+                    }
+                    preferences = data;
+                    renderVoiceOptions();
+                    voiceSelect.value = selectedVoice;
+                    updateVoiceInfo(voices.find(voice => voice.id === selectedVoice));
+                } catch (error) {
+                    showError(singleError, error.message || '收藏失败');
+                }
+            });
+
+            presetSelect.addEventListener('change', function() {
+                const selectedPreset = presets.find(preset => preset.id === this.value);
+                if (!selectedPreset) return;
+
+                if (selectedPreset.voice) {
+                    voiceSelect.value = selectedPreset.voice;
+                    if (voiceSelect.value !== selectedPreset.voice) {
+                        voiceSearch.value = '';
+                        renderVoiceOptions();
+                        voiceSelect.value = selectedPreset.voice;
+                    }
+                    updateVoiceInfo(voices.find(voice => voice.id === selectedPreset.voice));
+                }
+                if (selectedPreset.speech_rate) {
+                    speechRateSelect.value = selectedPreset.speech_rate;
+                }
+            });
+
             modeTabs.forEach(tab => {
                 tab.addEventListener('click', function() {
                     setMode(this.dataset.mode);
@@ -652,6 +869,47 @@
                     showError(singleError, error.message || '转换过程中出现错误，请重试。');
                     singleLoading.classList.remove('show');
                     convertBtn.disabled = false;
+                }
+            });
+
+            previewBtn.addEventListener('click', async function() {
+                const text = textInput.value.trim();
+                if (!text) {
+                    alert('请输入要试听的文本');
+                    return;
+                }
+
+                const selectedVoice = voiceSelect.value;
+                if (!selectedVoice) {
+                    alert('请选择语音');
+                    return;
+                }
+
+                previewBtn.disabled = true;
+                hideError(singleError);
+
+                try {
+                    const formData = new FormData();
+                    formData.append('text', text);
+                    formData.append('voice', selectedVoice);
+                    formData.append('speech_rate', speechRateSelect.value || '1.0');
+
+                    const response = await fetch('/preview', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '试听失败'));
+                    }
+                    previewAudio.src = data.audio_url;
+                    previewSection.classList.add('show');
+                    previewAudio.play().catch(() => {});
+                    await loadVoices();
+                } catch (error) {
+                    showError(singleError, error.message || '试听失败');
+                } finally {
+                    previewBtn.disabled = false;
                 }
             });
 
@@ -791,11 +1049,35 @@
 
             batchClearBtn.addEventListener('click', resetBatchJob);
 
+            historyRefreshBtn.addEventListener('click', loadHistory);
+
+            historyList.addEventListener('click', async function(event) {
+                const audioUrl = event.target.dataset.historyAudio;
+                const deleteId = event.target.dataset.historyDelete;
+
+                if (audioUrl) {
+                    resultAudio.src = audioUrl;
+                    downloadSection.classList.add('show');
+                    resultAudio.style.display = 'block';
+                    resultAudio.play().catch(() => {});
+                    return;
+                }
+
+                if (deleteId) {
+                    const response = await fetch(`/history/${encodeURIComponent(deleteId)}`, { method: 'DELETE' });
+                    if (response.ok) {
+                        loadHistory();
+                    }
+                }
+            });
+
             updateTextCounter();
             renderBatchFiles();
             batchDownloadAllBtn.disabled = true;
             checkNetworkStatus();
+            loadPresets();
             loadVoices();
+            loadHistory();
             setInterval(checkNetworkStatus, 30000);
         });
     </script>

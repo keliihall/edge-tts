@@ -20,6 +20,13 @@ def client(tmp_path, monkeypatch):
     with app_module.TEXT_JOB_LOCK:
         app_module.TEXT_JOBS.clear()
 
+    with app_module.HISTORY_LOCK:
+        app_module.HISTORY_ITEMS.clear()
+
+    with app_module.PREFERENCES_LOCK:
+        app_module.USER_PREFERENCES["favorite_voices"] = []
+        app_module.USER_PREFERENCES["recent_voices"] = []
+
     monkeypatch.setattr(app_module, "check_network_connectivity", lambda: True)
 
     def fake_generate_speech_with_retries(text, voice, speech_rate=app_module.DEFAULT_SPEECH_RATE):
@@ -39,6 +46,13 @@ def client(tmp_path, monkeypatch):
 
     with app_module.TEXT_JOB_LOCK:
         app_module.TEXT_JOBS.clear()
+
+    with app_module.HISTORY_LOCK:
+        app_module.HISTORY_ITEMS.clear()
+
+    with app_module.PREFERENCES_LOCK:
+        app_module.USER_PREFERENCES["favorite_voices"] = []
+        app_module.USER_PREFERENCES["recent_voices"] = []
 
 
 def error_payload(response):
@@ -121,6 +135,49 @@ def test_text_job_downloads_finished_single_chunk(client):
     assert download_response.status_code == 200
     assert download_response.data == b"fake mp3 data"
 
+    audio_response = client.get(job["audio_url"])
+    assert audio_response.status_code == 200
+    assert audio_response.data == b"fake mp3 data"
+
+
+def test_preview_generates_audio_url_and_remembers_recent_voice(client):
+    response = client.post(
+        "/preview",
+        data={
+            "text": "这是一段用于试听的文本" * 40,
+            "voice": "zh-CN-XiaoyiNeural",
+            "speech_rate": "0.9",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["file_id"]
+    assert data["text_length"] == app_module.PREVIEW_TEXT_LENGTH
+
+    audio_response = client.get(data["audio_url"])
+    assert audio_response.status_code == 200
+    assert audio_response.data == b"fake mp3 data"
+
+    preferences = client.get("/preferences").get_json()
+    assert preferences["recent_voices"][0] == "zh-CN-XiaoyiNeural"
+
+
+def test_voice_favorites_and_presets(client):
+    favorite_response = client.post(
+        "/preferences/favorites/zh-CN-XiaoxiaoNeural",
+        json={"favorite": True},
+    )
+    assert favorite_response.status_code == 200
+    assert "zh-CN-XiaoxiaoNeural" in favorite_response.get_json()["favorite_voices"]
+
+    voices = client.get("/voices").get_json()
+    selected_voice = next(voice for voice in voices if voice["id"] == "zh-CN-XiaoxiaoNeural")
+    assert selected_voice["favorite"] is True
+
+    presets = client.get("/presets").get_json()
+    assert any(preset["id"] == "story" for preset in presets)
+
 
 def test_download_uses_token_route_and_rejects_path_query(client):
     with app_module.create_temp_audio_file() as tmp_file:
@@ -191,6 +248,29 @@ def test_long_text_job_creates_multiple_chunks_and_zip_download(client):
     download_response = client.get(f"/jobs/{job_id}/download?name=long-job")
     assert download_response.status_code == 200
     assert download_response.mimetype == "application/zip"
+
+
+def test_finished_text_job_records_history(client):
+    response = client.post(
+        "/convert",
+        data={
+            "text": "这是一条会进入历史记录的文本",
+            "voice": "zh-CN-XiaoxiaoNeural",
+            "speech_rate": "1.0",
+        },
+    )
+    job_id = response.get_json()["id"]
+    wait_for_text_job(client, job_id)
+
+    history = client.get("/history").get_json()
+    assert len(history) == 1
+    assert history[0]["job_id"] == job_id
+    assert history[0]["download_url"] == f"/jobs/{job_id}/download"
+    assert history[0]["audio_url"]
+
+    delete_response = client.delete(f"/history/{history[0]['id']}")
+    assert delete_response.status_code == 200
+    assert client.get("/history").get_json() == []
 
 
 def test_text_job_cancel_marks_queued_job_cancelled(client):

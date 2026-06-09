@@ -244,6 +244,13 @@ textarea:focus,
     color: var(--text-color);
 }
 
+.voice-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+}
+
 .speed-selection {
     margin-top: 16px;
 }
@@ -432,6 +439,40 @@ label {
     display: block;
 }
 
+.preview-section {
+    display: none;
+    margin-top: 16px;
+    padding: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background-color: var(--muted-surface);
+}
+
+.preview-section.show {
+    display: block;
+}
+
+audio {
+    width: 100%;
+    margin-bottom: 12px;
+}
+
+#result-audio {
+    display: none;
+}
+
+.history-section {
+    margin-top: 24px;
+}
+
+.row-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
 .result-header {
     display: flex;
     align-items: center;
@@ -514,15 +555,24 @@ label {
 
     .batch-upload,
     .action-row,
-    .result-header {
+    .result-header,
+    .voice-tools {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .voice-tools {
+        display: flex;
     }
 
     .file-row,
     .result-row {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .row-actions {
+        justify-content: stretch;
     }
 
     .file-name {
