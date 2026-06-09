@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 
 import pytest
@@ -15,6 +16,9 @@ def client(tmp_path, monkeypatch):
 
     with app_module.BATCH_LOCK:
         app_module.BATCH_JOBS.clear()
+
+    with app_module.TEXT_JOB_LOCK:
+        app_module.TEXT_JOBS.clear()
 
     monkeypatch.setattr(app_module, "check_network_connectivity", lambda: True)
 
@@ -33,12 +37,30 @@ def client(tmp_path, monkeypatch):
     with app_module.BATCH_LOCK:
         app_module.BATCH_JOBS.clear()
 
+    with app_module.TEXT_JOB_LOCK:
+        app_module.TEXT_JOBS.clear()
+
 
 def error_payload(response):
     data = response.get_json()
     assert "error" in data
     assert isinstance(data["error"], dict)
     return data["error"]
+
+
+def wait_for_text_job(client, job_id, expected_status="finished", timeout=2):
+    deadline = time.time() + timeout
+    last_data = None
+
+    while time.time() < deadline:
+        response = client.get(f"/jobs/{job_id}")
+        assert response.status_code == 200
+        last_data = response.get_json()
+        if last_data["status"] == expected_status:
+            return last_data
+        time.sleep(0.02)
+
+    raise AssertionError(f"Job {job_id} did not reach {expected_status}: {last_data}")
 
 
 def test_normalize_speech_rate_accepts_supported_values():
@@ -61,7 +83,7 @@ def test_decode_text_file_supports_common_chinese_encodings():
     assert app_module.decode_text_file("你好".encode("gb18030")) == "你好"
 
 
-def test_convert_returns_file_id_not_local_path(client):
+def test_convert_creates_async_text_job(client):
     response = client.post(
         "/convert",
         data={
@@ -71,14 +93,16 @@ def test_convert_returns_file_id_not_local_path(client):
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.get_json()
-    assert data["file_id"]
+    assert data["id"]
+    assert data["status"] in ("queued", "processing", "finished")
     assert "audio_path" not in data
-    assert data["download_name"].endswith(".mp3")
+    assert data["total"] == 1
+    assert data["download_name"]
 
 
-def test_download_uses_file_token_and_rejects_path_query(client):
+def test_text_job_downloads_finished_single_chunk(client):
     convert_response = client.post(
         "/convert",
         data={
@@ -87,11 +111,25 @@ def test_download_uses_file_token_and_rejects_path_query(client):
             "speech_rate": "1.0",
         },
     )
-    file_id = convert_response.get_json()["file_id"]
+    job_id = convert_response.get_json()["id"]
+    job = wait_for_text_job(client, job_id)
+
+    assert job["success_count"] == 1
+    assert job["downloadable"] is True
+
+    download_response = client.get(f"/jobs/{job_id}/download?name=demo.mp3")
+    assert download_response.status_code == 200
+    assert download_response.data == b"fake mp3 data"
+
+
+def test_download_uses_token_route_and_rejects_path_query(client):
+    with app_module.create_temp_audio_file() as tmp_file:
+        tmp_file.write(b"legacy token audio")
+        file_id = app_module.register_single_result(tmp_file.name, "legacy.mp3")
 
     download_response = client.get(f"/download/{file_id}?name=demo.mp3")
     assert download_response.status_code == 200
-    assert download_response.data == b"fake mp3 data"
+    assert download_response.data == b"legacy token audio"
 
     forged_response = client.get("/download?path=/etc/passwd&name=bad.mp3")
     assert forged_response.status_code == 404
@@ -121,6 +159,90 @@ def test_convert_rejects_unknown_voice_with_structured_error(client):
     assert response.status_code == 400
     error = error_payload(response)
     assert error["code"] == "invalid_voice"
+
+
+def test_split_text_to_chunks_prefers_sentence_boundaries():
+    text = "第一句。" * 10 + "第二段很长，" * 80
+    chunks = app_module.split_text_to_chunks(text, max_chars=80)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 80 for chunk in chunks)
+    assert chunks[0].endswith("。")
+
+
+def test_long_text_job_creates_multiple_chunks_and_zip_download(client):
+    long_text = "这是一个长句子。" * 800
+
+    response = client.post(
+        "/convert",
+        data={
+            "text": long_text,
+            "voice": "zh-CN-XiaoxiaoNeural",
+            "speech_rate": "1.0",
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.get_json()["id"]
+    job = wait_for_text_job(client, job_id)
+
+    assert job["total"] > 1
+    assert job["success_count"] == job["total"]
+
+    download_response = client.get(f"/jobs/{job_id}/download?name=long-job")
+    assert download_response.status_code == 200
+    assert download_response.mimetype == "application/zip"
+
+
+def test_text_job_cancel_marks_queued_job_cancelled(client):
+    job = app_module.create_text_job(
+        "第一段。" * 100,
+        "zh-CN-XiaoxiaoNeural",
+        "1.0",
+    )
+
+    response = client.post(f"/jobs/{job['id']}/cancel")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "cancelled"
+    assert data["cancelled_count"] == data["total"]
+
+
+def test_retry_failed_text_job_item(client, monkeypatch):
+    attempts = {"count": 0}
+    ready = threading.Event()
+
+    def flaky_generate(text, voice, speech_rate=app_module.DEFAULT_SPEECH_RATE):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            ready.set()
+            raise Exception("temporary failure")
+        with app_module.create_temp_audio_file() as tmp_file:
+            tmp_file.write(b"retry mp3 data")
+            return tmp_file.name
+
+    monkeypatch.setattr(app_module, "generate_speech_with_retries", flaky_generate)
+
+    response = client.post(
+        "/convert",
+        data={
+            "text": "需要重试的文本",
+            "voice": "zh-CN-XiaoxiaoNeural",
+            "speech_rate": "1.0",
+        },
+    )
+    job_id = response.get_json()["id"]
+    assert ready.wait(1)
+    job = wait_for_text_job(client, job_id)
+    assert job["failed_count"] == 1
+    item_id = job["items"][0]["id"]
+
+    retry_response = client.post(f"/jobs/{job_id}/items/{item_id}/retry")
+    assert retry_response.status_code == 202
+
+    retried_job = wait_for_text_job(client, job_id)
+    assert retried_job["success_count"] == 1
+    assert retried_job["failed_count"] == 0
 
 
 def test_batch_rejects_unknown_voice_with_structured_error(client):

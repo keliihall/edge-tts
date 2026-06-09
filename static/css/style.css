@@ -444,6 +444,12 @@ label {
     background-color: #fffbeb;
 }
 
+.result-row.queued,
+.result-row.pending,
+.result-row.cancelled {
+    background-color: #f8fafc;
+}
+
 .result-row.done {
     background-color: #f0fdf4;
 }
@@ -463,6 +469,12 @@ label {
 }
 
 .result-status.pending {
+    background-color: #e2e8f0;
+    color: #475569;
+}
+
+.result-status.queued,
+.result-status.cancelled {
     background-color: #e2e8f0;
     color: #475569;
 }

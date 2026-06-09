@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文本转语音工具 v0.3</title>
+    <title>文本转语音工具 v0.4</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
         <header class="app-header">
-            <h1>文本转语音工具 <span class="version-badge">v0.3</span></h1>
+            <h1>文本转语音工具 <span class="version-badge">v0.4</span></h1>
         </header>
 
         <div class="network-status" id="network-status">
@@ -49,21 +49,37 @@
             <div class="form-group">
                 <div class="field-header">
                     <label for="text-input">文本内容</label>
-                    <span id="text-counter">0/20000</span>
+                    <span id="text-counter">0/200000</span>
                 </div>
-                <textarea id="text-input" maxlength="20000" placeholder="请输入要转换的文本..."></textarea>
+                <textarea id="text-input" maxlength="200000" placeholder="请输入要转换的文本..."></textarea>
             </div>
 
-            <div class="form-group">
+            <div class="action-row">
                 <button id="convert-btn" class="btn">转换为语音</button>
+                <button id="single-cancel-btn" class="btn secondary-btn" type="button" disabled>取消任务</button>
             </div>
 
             <div class="loading" id="single-loading">
                 <p>正在转换中，请稍候...</p>
             </div>
 
+            <div class="batch-progress" id="single-progress">
+                <div class="progress-track">
+                    <div class="progress-bar" id="single-progress-bar"></div>
+                </div>
+                <div class="progress-text" id="single-progress-text">等待开始</div>
+            </div>
+
             <div class="error-message" id="single-error">
                 <p>转换过程中出现错误，请重试。</p>
+            </div>
+
+            <div class="batch-result-section" id="single-result-section">
+                <div class="result-header">
+                    <h2>转换进度</h2>
+                    <button id="single-retry-failed-btn" class="btn small-btn secondary-btn" type="button" disabled>重试失败片段</button>
+                </div>
+                <div class="batch-results-list" id="single-results-list"></div>
             </div>
 
             <div class="download-section" id="single-download-section">
@@ -111,13 +127,20 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const MAX_TEXT_LENGTH = 20000;
+            const MAX_TEXT_LENGTH = 200000;
             const MAX_BATCH_FILES = 20;
             const textInput = document.getElementById('text-input');
             const textCounter = document.getElementById('text-counter');
             const voiceSelect = document.getElementById('voice-select');
             const speechRateSelect = document.getElementById('speech-rate-select');
             const convertBtn = document.getElementById('convert-btn');
+            const singleCancelBtn = document.getElementById('single-cancel-btn');
+            const singleProgress = document.getElementById('single-progress');
+            const singleProgressBar = document.getElementById('single-progress-bar');
+            const singleProgressText = document.getElementById('single-progress-text');
+            const singleResultSection = document.getElementById('single-result-section');
+            const singleResultsList = document.getElementById('single-results-list');
+            const singleRetryFailedBtn = document.getElementById('single-retry-failed-btn');
             const downloadSection = document.getElementById('single-download-section');
             const downloadBtn = document.getElementById('download-btn');
             const filenameInput = document.getElementById('filename-input');
@@ -142,7 +165,9 @@
             const batchResultsList = document.getElementById('batch-results-list');
             const batchDownloadAllBtn = document.getElementById('batch-download-all-btn');
 
-            let fileId = '';
+            let currentSingleJobId = '';
+            let currentSingleJob = null;
+            let singlePollTimer = null;
             let defaultDownloadName = '';
             let voices = [];
             let networkStatus = 'checking';
@@ -182,12 +207,23 @@
 
             function statusTextFor(status) {
                 const labels = {
+                    queued: '排队中',
                     pending: '等待中',
                     processing: '转换中',
+                    finished: '已完成',
+                    cancelled: '已取消',
                     done: '已完成',
                     failed: '失败'
                 };
                 return labels[status] || status;
+            }
+
+            function formatDuration(seconds) {
+                if (seconds === null || seconds === undefined) return '估算中';
+                if (seconds < 60) return `${Math.round(seconds)} 秒`;
+                const minutes = Math.floor(seconds / 60);
+                const restSeconds = Math.round(seconds % 60);
+                return `${minutes} 分 ${restSeconds} 秒`;
             }
 
             function updateTextCounter() {
@@ -296,6 +332,155 @@
                     row.appendChild(removeBtn);
                     batchFileList.appendChild(row);
                 });
+            }
+
+            function resetSingleJobView() {
+                if (singlePollTimer) {
+                    clearInterval(singlePollTimer);
+                    singlePollTimer = null;
+                }
+
+                currentSingleJobId = '';
+                currentSingleJob = null;
+                defaultDownloadName = '';
+                singleProgress.classList.remove('show');
+                singleResultSection.classList.remove('show');
+                downloadSection.classList.remove('show');
+                singleProgressBar.style.width = '0%';
+                singleProgressText.textContent = '等待开始';
+                singleResultsList.innerHTML = '';
+                singleCancelBtn.disabled = true;
+                singleRetryFailedBtn.disabled = true;
+            }
+
+            function renderSingleJob(job) {
+                currentSingleJob = job;
+                currentSingleJobId = job.id;
+
+                const progressPercent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
+                singleProgress.classList.add('show');
+                singleProgressBar.style.width = `${progressPercent}%`;
+
+                const etaText = job.estimated_remaining_seconds === null || job.estimated_remaining_seconds === undefined
+                    ? '剩余时间估算中'
+                    : `预计剩余 ${formatDuration(job.estimated_remaining_seconds)}`;
+                singleProgressText.textContent = `已完成 ${job.completed}/${job.total} · 成功 ${job.success_count} · 失败 ${job.failed_count} · ${etaText}`;
+
+                singleResultSection.classList.add('show');
+                singleCancelBtn.disabled = !['queued', 'processing'].includes(job.status);
+                singleRetryFailedBtn.disabled = job.failed_count === 0 || job.status === 'processing';
+                downloadSection.classList.toggle('show', job.downloadable && job.status !== 'processing');
+
+                if (job.download_name && !filenameInput.value.trim()) {
+                    filenameInput.value = job.download_name;
+                }
+
+                singleResultsList.innerHTML = '';
+                job.items.forEach(item => {
+                    const row = document.createElement('div');
+                    row.className = `result-row ${item.status}`;
+
+                    const meta = document.createElement('div');
+                    meta.className = 'result-meta';
+
+                    const name = document.createElement('span');
+                    name.className = 'file-name';
+                    name.textContent = job.total > 1 ? `片段 ${item.index}` : '完整文本';
+
+                    const detail = document.createElement('span');
+                    detail.className = 'file-size';
+                    const sizeText = item.size ? formatBytes(item.size) : statusTextFor(item.status);
+                    detail.textContent = `${item.text_length} 字 · ${sizeText} · 尝试 ${item.attempts || 0} 次`;
+
+                    meta.appendChild(name);
+                    meta.appendChild(detail);
+
+                    if (item.error) {
+                        const error = document.createElement('span');
+                        error.className = 'result-error';
+                        error.textContent = item.error;
+                        meta.appendChild(error);
+                    }
+
+                    row.appendChild(meta);
+
+                    if (['failed', 'cancelled'].includes(item.status) && job.status !== 'processing') {
+                        const retryButton = document.createElement('button');
+                        retryButton.type = 'button';
+                        retryButton.className = 'btn small-btn';
+                        retryButton.dataset.retryItemId = item.id;
+                        retryButton.textContent = '重试';
+                        row.appendChild(retryButton);
+                    } else {
+                        const status = document.createElement('span');
+                        status.className = `result-status ${item.status}`;
+                        status.textContent = statusTextFor(item.status);
+                        row.appendChild(status);
+                    }
+
+                    singleResultsList.appendChild(row);
+                });
+            }
+
+            async function pollSingleStatus() {
+                if (!currentSingleJobId) return;
+
+                try {
+                    const response = await fetch(`/jobs/${encodeURIComponent(currentSingleJobId)}`);
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '无法获取转换任务状态'));
+                    }
+
+                    renderSingleJob(data);
+
+                    if (['finished', 'cancelled'].includes(data.status)) {
+                        singleLoading.classList.remove('show');
+                        convertBtn.disabled = false;
+                        singleCancelBtn.disabled = true;
+                        if (singlePollTimer) {
+                            clearInterval(singlePollTimer);
+                            singlePollTimer = null;
+                        }
+                    }
+                } catch (error) {
+                    showError(singleError, error.message || '无法获取转换任务状态');
+                    singleLoading.classList.remove('show');
+                    convertBtn.disabled = false;
+                    singleCancelBtn.disabled = true;
+                    if (singlePollTimer) {
+                        clearInterval(singlePollTimer);
+                        singlePollTimer = null;
+                    }
+                }
+            }
+
+            function startSinglePolling() {
+                if (singlePollTimer) {
+                    clearInterval(singlePollTimer);
+                }
+                singlePollTimer = setInterval(pollSingleStatus, 1200);
+                pollSingleStatus();
+            }
+
+            async function retrySingleItem(itemId) {
+                if (!currentSingleJobId || !itemId) return;
+
+                try {
+                    const response = await fetch(`/jobs/${encodeURIComponent(currentSingleJobId)}/items/${encodeURIComponent(itemId)}/retry`, {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '重试失败'));
+                    }
+                    singleLoading.classList.add('show');
+                    convertBtn.disabled = true;
+                    renderSingleJob(data);
+                    startSinglePolling();
+                } catch (error) {
+                    showError(singleError, error.message || '重试失败');
+                }
             }
 
             function resetBatchJob() {
@@ -437,10 +622,9 @@
                     return;
                 }
 
+                resetSingleJobView();
                 singleLoading.classList.add('show');
                 convertBtn.disabled = true;
-                downloadSection.classList.remove('show');
-                fileId = '';
                 hideError(singleError);
 
                 try {
@@ -459,30 +643,59 @@
                         throw new Error(getErrorMessage(data, '转换失败'));
                     }
 
-                    fileId = data.file_id;
-                    defaultDownloadName = data.download_name;
-                    filenameInput.value = defaultDownloadName.replace('.mp3', '');
-                    downloadSection.classList.add('show');
+                    currentSingleJobId = data.id;
+                    defaultDownloadName = data.download_name || '';
+                    filenameInput.value = defaultDownloadName;
+                    renderSingleJob(data);
+                    startSinglePolling();
                 } catch (error) {
                     showError(singleError, error.message || '转换过程中出现错误，请重试。');
-                } finally {
                     singleLoading.classList.remove('show');
                     convertBtn.disabled = false;
                 }
             });
 
             downloadBtn.addEventListener('click', function() {
-                if (!fileId) return;
+                if (!currentSingleJobId) return;
 
                 let downloadName = filenameInput.value.trim();
                 if (!downloadName) {
-                    downloadName = defaultDownloadName;
-                } else if (!downloadName.endsWith('.mp3')) {
-                    downloadName += '.mp3';
+                    downloadName = defaultDownloadName || 'speech';
                 }
 
-                const downloadUrl = `/download/${encodeURIComponent(fileId)}?name=${encodeURIComponent(downloadName)}`;
+                const downloadUrl = `/jobs/${encodeURIComponent(currentSingleJobId)}/download?name=${encodeURIComponent(downloadName)}`;
                 window.location.href = downloadUrl;
+            });
+
+            singleCancelBtn.addEventListener('click', async function() {
+                if (!currentSingleJobId) return;
+
+                try {
+                    const response = await fetch(`/jobs/${encodeURIComponent(currentSingleJobId)}/cancel`, {
+                        method: 'POST'
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(getErrorMessage(data, '取消失败'));
+                    }
+                    renderSingleJob(data);
+                    pollSingleStatus();
+                } catch (error) {
+                    showError(singleError, error.message || '取消失败');
+                }
+            });
+
+            singleRetryFailedBtn.addEventListener('click', async function() {
+                if (!currentSingleJob) return;
+                const failedItems = currentSingleJob.items.filter(item => ['failed', 'cancelled'].includes(item.status));
+                if (failedItems.length === 0) return;
+                await retrySingleItem(failedItems[0].id);
+            });
+
+            singleResultsList.addEventListener('click', async function(event) {
+                const retryItemId = event.target.dataset.retryItemId;
+                if (!retryItemId) return;
+                await retrySingleItem(retryItemId);
             });
 
             batchFileInput.addEventListener('change', function() {

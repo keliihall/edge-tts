@@ -13,9 +13,11 @@ from urllib.parse import urlparse
 
 app = Flask(__name__)
 
-APP_VERSION = "0.3"
-MAX_TEXT_LENGTH = 20000
+APP_VERSION = "0.4"
+MAX_TEXT_LENGTH = 200000
+MAX_CHUNK_LENGTH = 5000
 MAX_BATCH_FILES = 20
+MAX_BATCH_TEXT_LENGTH = 20000
 MAX_RETRIES = 3
 CONNECT_TIMEOUT = 30
 RECEIVE_TIMEOUT = 300
@@ -35,6 +37,9 @@ SPEECH_RATE_OPTIONS = {
 BATCH_JOB_TTL_SECONDS = 6 * 60 * 60
 BATCH_JOBS = {}
 BATCH_LOCK = threading.Lock()
+TEXT_JOB_TTL_SECONDS = 6 * 60 * 60
+TEXT_JOBS = {}
+TEXT_JOB_LOCK = threading.Lock()
 SINGLE_RESULTS = {}
 SINGLE_RESULTS_LOCK = threading.Lock()
 CLEANUP_LOCK = threading.Lock()
@@ -122,6 +127,306 @@ def register_single_result(audio_path, download_name):
 
     return file_id
 
+def split_text_to_chunks(text, max_chars=MAX_CHUNK_LENGTH):
+    """按自然断点把长文本切成 edge-tts 更稳定处理的片段。"""
+    remaining_text = (text or "").strip()
+    if not remaining_text:
+        return []
+
+    chunks = []
+    strong_break_chars = "\n。！？!?"
+    weak_break_chars = "；;，,、：:"
+    min_soft_break = max(1, int(max_chars * 0.45))
+
+    while len(remaining_text) > max_chars:
+        window = remaining_text[:max_chars]
+        split_at = -1
+
+        for index in range(len(window) - 1, min_soft_break - 1, -1):
+            if window[index] in strong_break_chars:
+                split_at = index + 1
+                break
+
+        if split_at <= 0:
+            for index in range(len(window) - 1, min_soft_break - 1, -1):
+                if window[index] in weak_break_chars:
+                    split_at = index + 1
+                    break
+
+        if split_at <= 0:
+            for index in range(min(len(window) - 1, max_chars - 1), -1, -1):
+                if window[index] in strong_break_chars:
+                    split_at = index + 1
+                    break
+
+        if split_at <= 0:
+            for index in range(min(len(window) - 1, max_chars - 1), -1, -1):
+                if window[index] in weak_break_chars:
+                    split_at = index + 1
+                    break
+
+        if split_at <= 0:
+            for index in range(min(len(window) - 1, max_chars - 1), -1, -1):
+                if window[index].isspace():
+                    split_at = index + 1
+                    break
+
+        if split_at <= 0:
+            split_at = max_chars
+
+        chunk = remaining_text[:split_at].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining_text = remaining_text[split_at:].strip()
+
+    if remaining_text:
+        chunks.append(remaining_text)
+
+    return chunks
+
+def recompute_text_job_counts(job):
+    """根据 item 状态重新计算任务统计。"""
+    items = job.get("items", [])
+    job["total"] = len(items)
+    job["success_count"] = sum(1 for item in items if item.get("status") == "done")
+    job["failed_count"] = sum(1 for item in items if item.get("status") == "failed")
+    job["cancelled_count"] = sum(1 for item in items if item.get("status") == "cancelled")
+    job["completed"] = sum(
+        1
+        for item in items
+        if item.get("status") in ("done", "failed", "cancelled")
+    )
+    return job
+
+def estimate_remaining_seconds(job):
+    """基于已完成片段粗略估算剩余耗时。"""
+    if not job.get("started_at") or not job.get("completed"):
+        return None
+
+    remaining = max(job.get("total", 0) - job.get("completed", 0), 0)
+    if remaining == 0:
+        return 0
+
+    elapsed = max(time.time() - job["started_at"], 0)
+    average = elapsed / max(job["completed"], 1)
+    return round(average * remaining, 1)
+
+def public_text_job(job):
+    """返回可暴露给前端的文本任务数据。"""
+    recompute_text_job_counts(job)
+    now = time.time()
+    elapsed_seconds = None
+    if job.get("started_at"):
+        end_time = job.get("finished_at") or now
+        elapsed_seconds = round(max(end_time - job["started_at"], 0), 1)
+
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "voice": job["voice"],
+        "speech_rate": job["speech_rate"],
+        "text_length": job["text_length"],
+        "total": job["total"],
+        "completed": job["completed"],
+        "success_count": job["success_count"],
+        "failed_count": job["failed_count"],
+        "cancelled_count": job.get("cancelled_count", 0),
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "elapsed_seconds": elapsed_seconds,
+        "estimated_remaining_seconds": estimate_remaining_seconds(job),
+        "download_name": job["download_name"],
+        "downloadable": job["success_count"] > 0,
+        "cancel_requested": job.get("cancel_requested", False),
+        "items": [
+            {
+                "id": item["id"],
+                "index": item["index"],
+                "status": item["status"],
+                "text_length": item["text_length"],
+                "size": item.get("size", 0),
+                "error": item.get("error"),
+                "attempts": item.get("attempts", 0),
+            }
+            for item in job["items"]
+        ],
+    }
+
+def get_text_job(job_id):
+    """线程安全读取文本任务。"""
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if job:
+            return job.copy()
+    return None
+
+def update_text_job(job_id, updater):
+    """线程安全地更新文本任务。"""
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return None
+        updater(job)
+        recompute_text_job_counts(job)
+        job["updated_at"] = time.time()
+        return job.copy()
+
+def create_text_job(text, voice, speech_rate):
+    """创建异步文本转语音任务。"""
+    chunks = split_text_to_chunks(text, MAX_CHUNK_LENGTH)
+    if not chunks:
+        raise ValueError("请输入要转换的文本。")
+
+    job_id = uuid.uuid4().hex
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    download_name = f"speech_{timestamp}"
+    now = time.time()
+    items = [
+        {
+            "id": uuid.uuid4().hex,
+            "index": index + 1,
+            "text": chunk,
+            "text_length": len(chunk),
+            "status": "pending",
+            "audio_path": None,
+            "size": 0,
+            "error": None,
+            "attempts": 0,
+            "download_name": f"{download_name}_part_{index + 1:03d}.mp3",
+        }
+        for index, chunk in enumerate(chunks)
+    ]
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "voice": voice,
+        "speech_rate": speech_rate,
+        "text_length": len(text),
+        "download_name": download_name,
+        "total": len(items),
+        "completed": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "cancelled_count": 0,
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "cancel_requested": False,
+        "items": items,
+    }
+    recompute_text_job_counts(job)
+
+    with TEXT_JOB_LOCK:
+        TEXT_JOBS[job_id] = job
+
+    return job
+
+def terminal_text_job_status(job):
+    if job.get("cancel_requested"):
+        return "cancelled"
+    if any(item.get("status") in ("pending", "processing") for item in job.get("items", [])):
+        return "processing"
+    return "finished"
+
+def mark_remaining_text_items_cancelled(job):
+    for item in job.get("items", []):
+        if item.get("status") in ("pending", "processing"):
+            item["status"] = "cancelled"
+            item["error"] = "任务已取消。"
+
+def process_text_job(job_id, only_item_id=None):
+    """后台处理文本转语音任务，可处理全量或单个失败片段。"""
+    def mark_job_processing(job):
+        job["status"] = "processing"
+        job["finished_at"] = None
+        if not job.get("started_at"):
+            job["started_at"] = time.time()
+
+    update_text_job(job_id, mark_job_processing)
+
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return
+        target_items = [
+            item
+            for item in job["items"]
+            if (only_item_id is None or item["id"] == only_item_id)
+            and item.get("status") in ("pending", "failed", "cancelled")
+        ]
+
+    for item in target_items:
+        with TEXT_JOB_LOCK:
+            job = TEXT_JOBS.get(job_id)
+            if not job:
+                return
+            if job.get("cancel_requested"):
+                mark_remaining_text_items_cancelled(job)
+                recompute_text_job_counts(job)
+                job["status"] = "cancelled"
+                job["finished_at"] = time.time()
+                job["updated_at"] = time.time()
+                return
+            current_item = next((candidate for candidate in job["items"] if candidate["id"] == item["id"]), None)
+            if not current_item:
+                continue
+            current_item["status"] = "processing"
+            current_item["error"] = None
+            current_item["attempts"] = current_item.get("attempts", 0) + 1
+            job["updated_at"] = time.time()
+
+        try:
+            audio_path = generate_speech_with_retries(
+                item["text"],
+                job["voice"],
+                job["speech_rate"],
+            )
+            file_size = os.path.getsize(audio_path)
+
+            with TEXT_JOB_LOCK:
+                job = TEXT_JOBS.get(job_id)
+                if not job:
+                    unlink_audio_file(audio_path)
+                    return
+                current_item = next((candidate for candidate in job["items"] if candidate["id"] == item["id"]), None)
+                if not current_item:
+                    unlink_audio_file(audio_path)
+                    continue
+                unlink_audio_file(current_item.get("audio_path"))
+                current_item["status"] = "done"
+                current_item["audio_path"] = audio_path
+                current_item["size"] = file_size
+                current_item["error"] = None
+                recompute_text_job_counts(job)
+                job["updated_at"] = time.time()
+        except Exception as e:
+            error_msg = error_message_from_exception(e)
+            with TEXT_JOB_LOCK:
+                job = TEXT_JOBS.get(job_id)
+                if not job:
+                    return
+                current_item = next((candidate for candidate in job["items"] if candidate["id"] == item["id"]), None)
+                if current_item:
+                    current_item["status"] = "failed"
+                    current_item["error"] = error_msg
+                recompute_text_job_counts(job)
+                job["updated_at"] = time.time()
+
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return
+        if job.get("cancel_requested"):
+            mark_remaining_text_items_cancelled(job)
+        recompute_text_job_counts(job)
+        job["status"] = terminal_text_job_status(job)
+        if job["status"] in ("finished", "cancelled"):
+            job["finished_at"] = time.time()
+        job["updated_at"] = time.time()
+
 def get_single_result(file_id):
     """读取单条转换结果。"""
     with SINGLE_RESULTS_LOCK:
@@ -160,6 +465,13 @@ def cleanup_expired_audio_files(max_age_seconds=SINGLE_RESULT_TTL_SECONDS):
 
     with BATCH_LOCK:
         for job in BATCH_JOBS.values():
+            for item in job.get("items", []):
+                audio_path = item.get("audio_path")
+                if audio_path:
+                    referenced_paths.add(os.path.realpath(audio_path))
+
+    with TEXT_JOB_LOCK:
+        for job in TEXT_JOBS.values():
             for item in job.get("items", []):
                 audio_path = item.get("audio_path")
                 if audio_path:
@@ -369,6 +681,11 @@ def cleanup_job_files(job):
         audio_path = item.get("audio_path")
         unlink_audio_file(audio_path)
 
+def cleanup_text_job_files(job):
+    """清理文本任务产生的音频文件。"""
+    for item in job.get("items", []):
+        unlink_audio_file(item.get("audio_path"))
+
 def cleanup_old_jobs():
     """清理过期的批量任务。"""
     now = time.time()
@@ -384,6 +701,21 @@ def cleanup_old_jobs():
     for _job_id, job in expired_jobs:
         cleanup_job_files(job)
 
+def cleanup_old_text_jobs():
+    """清理过期的文本任务。"""
+    now = time.time()
+    expired_jobs = []
+
+    with TEXT_JOB_LOCK:
+        for job_id, job in list(TEXT_JOBS.items()):
+            if job.get("status") != "processing" and now - job.get("created_at", now) > TEXT_JOB_TTL_SECONDS:
+                expired_jobs.append((job_id, job))
+        for job_id, _job in expired_jobs:
+            TEXT_JOBS.pop(job_id, None)
+
+    for _job_id, job in expired_jobs:
+        cleanup_text_job_files(job)
+
 def run_periodic_cleanup(force=False):
     """定期清理过期任务和临时文件。"""
     global LAST_CLEANUP_AT
@@ -396,6 +728,7 @@ def run_periodic_cleanup(force=False):
 
     cleanup_single_results()
     cleanup_old_jobs()
+    cleanup_old_text_jobs()
     cleanup_expired_audio_files()
 
 @app.before_request
@@ -524,28 +857,116 @@ def convert():
     # 检查网络连接
     if not check_network_connectivity():
         return error_response("network_unavailable", "网络连接异常，无法连接到语音服务。请检查网络连接后重试。", 503)
-    
-    try:
-        audio_path = generate_speech_with_retries(text, voice, speech_rate)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        download_name = f'speech_{timestamp}.mp3'
-        file_id = register_single_result(audio_path, download_name)
 
-        return jsonify({
-            'file_id': file_id,
-            'download_name': download_name,
-            'voice': voice,
-            'speech_rate': speech_rate,
-            'text_length': len(text)
-        })
+    try:
+        job = create_text_job(text, voice, speech_rate)
+        response_data = public_text_job(job)
+        worker = threading.Thread(target=process_text_job, args=(job["id"],), daemon=True)
+        worker.start()
+        return jsonify(response_data), 202
     except Exception as e:
         error_msg = error_message_from_exception(e)
         return error_response(
-            "tts_generation_failed",
+            "text_job_create_failed",
             error_msg,
             get_error_status_code(error_msg),
             detail={"attempts": MAX_RETRIES}
         )
+
+@app.route('/jobs/<job_id>')
+def text_job_status(job_id):
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return error_response("text_job_not_found", "文本任务不存在或已过期。", 404)
+        data = public_text_job(job)
+
+    return jsonify(data)
+
+@app.route('/jobs/<job_id>/cancel', methods=['POST'])
+def text_job_cancel(job_id):
+    def request_cancel(job):
+        if job.get("status") in ("finished", "cancelled"):
+            return
+        job["cancel_requested"] = True
+        if job.get("status") == "queued":
+            mark_remaining_text_items_cancelled(job)
+            job["status"] = "cancelled"
+            job["finished_at"] = time.time()
+
+    job = update_text_job(job_id, request_cancel)
+    if not job:
+        return error_response("text_job_not_found", "文本任务不存在或已过期。", 404)
+
+    return jsonify(public_text_job(job))
+
+@app.route('/jobs/<job_id>/items/<item_id>/retry', methods=['POST'])
+def text_job_retry_item(job_id, item_id):
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return error_response("text_job_not_found", "文本任务不存在或已过期。", 404)
+        if job.get("status") == "processing":
+            return error_response("text_job_processing", "文本任务仍在处理中，请稍后再重试失败片段。", 409)
+        item = next((candidate for candidate in job["items"] if candidate["id"] == item_id), None)
+        if not item:
+            return error_response("text_job_item_not_found", "文本片段不存在或已过期。", 404)
+        if item.get("status") not in ("failed", "cancelled"):
+            return error_response("text_job_item_not_retryable", "只有失败或取消的片段可以重试。", 400)
+        job["cancel_requested"] = False
+        item["status"] = "pending"
+        item["error"] = None
+        recompute_text_job_counts(job)
+        job["status"] = "queued"
+        job["finished_at"] = None
+        job["updated_at"] = time.time()
+        response_data = public_text_job(job)
+
+    worker = threading.Thread(target=process_text_job, args=(job_id, item_id), daemon=True)
+    worker.start()
+    return jsonify(response_data), 202
+
+@app.route('/jobs/<job_id>/download')
+def text_job_download(job_id):
+    with TEXT_JOB_LOCK:
+        job = TEXT_JOBS.get(job_id)
+        if not job:
+            return error_response("text_job_not_found", "文本任务不存在或已过期。", 404)
+        done_items = [
+            item.copy()
+            for item in sorted(job["items"], key=lambda current_item: current_item["index"])
+            if item.get("status") == "done" and item.get("audio_path") and os.path.exists(item["audio_path"])
+        ]
+        default_download_name = job.get("download_name") or "speech"
+
+    if not done_items:
+        return error_response("no_downloadable_audio", "没有可下载的音频文件。", 404)
+
+    requested_name = request.args.get("name") or default_download_name
+    safe_name = sanitize_download_name(requested_name, default_download_name)
+
+    if len(done_items) == 1:
+        download_name = safe_name if safe_name.lower().endswith(".mp3") else f"{safe_name}.mp3"
+        return send_file(
+            done_items[0]["audio_path"],
+            as_attachment=True,
+            download_name=download_name,
+            mimetype='audio/mpeg'
+        )
+
+    zip_name = safe_name if safe_name.lower().endswith(".zip") else f"{safe_name}.zip"
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for item in done_items:
+            zip_file.write(item["audio_path"], arcname=item["download_name"])
+    zip_buffer.seek(0)
+
+    return send_file(
+        zip_buffer,
+        as_attachment=True,
+        download_name=zip_name,
+        mimetype='application/zip'
+    )
 
 @app.route('/batch/convert', methods=['POST'])
 def batch_convert():
@@ -593,8 +1014,8 @@ def batch_convert():
         if not text:
             return error_response("empty_file_text", f"{source_name} 没有可转换的文本内容。", 400)
 
-        if len(text) > MAX_TEXT_LENGTH:
-            return error_response("file_text_too_long", f"{source_name} 超过 {MAX_TEXT_LENGTH} 字符限制。", 400)
+        if len(text) > MAX_BATCH_TEXT_LENGTH:
+            return error_response("file_text_too_long", f"{source_name} 超过 {MAX_BATCH_TEXT_LENGTH} 字符限制。", 400)
 
         item_id = uuid.uuid4().hex
         download_name = mp3_name_from_txt(source_name, used_download_names)
