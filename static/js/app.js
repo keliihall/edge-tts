@@ -3,15 +3,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const $ = selector => document.querySelector(selector);
     const $$ = selector => Array.from(document.querySelectorAll(selector));
     const state = {
+        providers: [],
         voices: [],
         favorites: [],
         selectedFiles: [],
         tasks: [],
+        expandedTaskIds: new Set(),
         autoDownload: 'off',
         pollTimer: null
     };
 
     const elements = {
+        provider: $('#provider-select'),
+        providerDescription: $('#provider-description'),
         voice: $('#voice-select'),
         voiceSearch: $('#voice-search'),
         voiceDescription: $('#voice-description'),
@@ -35,11 +39,18 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     const settingsDisclosure = $('.settings-disclosure');
     const compactSettingsMedia = window.matchMedia('(max-width: 680px)');
+    const initialMode = new URLSearchParams(window.location.search).get('mode');
+    const focusTaskId = new URLSearchParams(window.location.search).get('task');
     if (settingsDisclosure) {
         if (compactSettingsMedia.matches) settingsDisclosure.open = false;
         compactSettingsMedia.addEventListener('change', event => {
             if (!event.matches) settingsDisclosure.open = true;
         });
+    }
+    const savedDraft = sessionStorage.getItem('shengjian-studio-draft');
+    if (savedDraft) {
+        elements.text.value = savedDraft;
+        sessionStorage.removeItem('shengjian-studio-draft');
     }
 
     function notify(message, type = 'info') {
@@ -89,18 +100,39 @@ document.addEventListener('DOMContentLoaded', () => {
         return state.voices.find(item => item.id === elements.voice.value);
     }
 
+    function currentProvider() {
+        return state.providers.find(item => item.id === elements.provider.value);
+    }
+
+    function providerDefaultVoice(providerId) {
+        return providerId === 'edge'
+            ? config.settings.default_voice
+            : config.settings[`${providerId}_default_voice`];
+    }
+
     function configLabel(values = {}) {
-        const voice = state.voices.find(item => item.id === (values.voice || elements.voice.value));
+        const providerId = values.provider || elements.provider.value || 'edge';
+        const provider = state.providers.find(item => item.id === providerId);
+        const voice = providerId === elements.provider.value
+            ? state.voices.find(item => item.id === (values.voice || elements.voice.value))
+            : null;
         const rate = values.speech_rate || elements.rate.value;
         const volume = values.volume || elements.volume.value;
         const pitch = values.pitch ?? elements.pitch.value;
         const pitchLabel = pitch === '0' ? '标准音高' : `${Number(pitch) > 0 ? '+' : ''}${pitch}Hz`;
-        return `${voice?.name || '未选音色'} · ${rate}x · ${Math.round(Number(volume) * 100)}% · ${pitchLabel}`;
+        const parts = [
+            provider?.name || providerId,
+            voice?.name || values.voice || '未选音色',
+            `${rate}x`
+        ];
+        if (provider?.capabilities?.volume !== false) parts.push(`${Math.round(Number(volume) * 100)}%`);
+        if (provider?.capabilities?.pitch !== false) parts.push(pitchLabel);
+        return parts.join(' · ');
     }
 
     function renderVoices() {
         const query = elements.voiceSearch.value.trim().toLowerCase();
-        const previous = elements.voice.value || config.settings.default_voice;
+        const previous = elements.voice.value || providerDefaultVoice(elements.provider.value);
         const filtered = state.voices.filter(item =>
             [item.name, item.id, item.style, item.locale].join(' ').toLowerCase().includes(query)
         );
@@ -112,6 +144,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
         if (filtered.some(item => item.id === previous)) elements.voice.value = previous;
         updateVoiceDescription();
+    }
+
+    function updateProviderCapabilities() {
+        const provider = currentProvider();
+        const capabilities = provider?.capabilities || {};
+        $$('[data-capability]').forEach(label => {
+            const supported = capabilities[label.dataset.capability] !== false;
+            const select = label.querySelector('select');
+            label.classList.toggle('capability-disabled', !supported);
+            select.disabled = !supported;
+            label.title = supported ? '' : `${provider?.name || '当前引擎'}不支持此参数`;
+        });
+        elements.providerDescription.textContent = provider
+            ? `${provider.description} ${provider.available ? '当前可用。' : provider.message}`
+            : '没有可用引擎';
+        updateActiveConfig();
+    }
+
+    async function loadVoices(providerId, preferredVoice = '') {
+        elements.voice.disabled = true;
+        elements.voice.innerHTML = '<option value="">加载音色...</option>';
+        try {
+            state.voices = await api(`/voices?provider=${encodeURIComponent(providerId)}`);
+            elements.voice.disabled = false;
+            elements.voiceSearch.value = '';
+            renderVoices();
+            const target = preferredVoice || providerDefaultVoice(providerId);
+            if (state.voices.some(item => item.id === target)) elements.voice.value = target;
+            else if (state.voices.length) elements.voice.value = state.voices[0].id;
+            updateVoiceDescription();
+        } catch (error) {
+            state.voices = [];
+            elements.voice.innerHTML = '<option value="">音色不可用</option>';
+            elements.voiceDescription.textContent = error.message;
+            notify(error.message, 'error');
+        }
     }
 
     function updateVoiceDescription() {
@@ -144,11 +212,12 @@ document.addEventListener('DOMContentLoaded', () => {
         $('#delete-favorite-btn').disabled = !elements.favoriteSelect.value;
     }
 
-    function applyFavorite(favorite) {
+    async function applyFavorite(favorite) {
         if (!favorite) return;
-        elements.voiceSearch.value = '';
-        renderVoices();
-        elements.voice.value = favorite.voice;
+        const providerId = favorite.provider || 'edge';
+        elements.provider.value = providerId;
+        updateProviderCapabilities();
+        await loadVoices(providerId, favorite.voice);
         elements.rate.value = favorite.speech_rate;
         elements.volume.value = favorite.volume;
         elements.pitch.value = favorite.pitch;
@@ -241,44 +310,79 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>`;
     }
 
+    function createTaskCard(task) {
+        const progress = task.total ? Math.round(task.completed / task.total * 100) : 0;
+        const failure = task.failed_count ? `<span class="metric danger">${task.failed_count} 失败</span>` : '';
+        const canDownload = task.success_count > 0 && !['queued', 'processing'].includes(task.status);
+        const detailsExpanded = state.expandedTaskIds.has(task.id);
+        const card = document.createElement('article');
+        card.className = `task-card ${task.status}${task.id === focusTaskId ? ' focus-task' : ''}`;
+        card.dataset.taskId = task.id;
+        card.dataset.renderKey = window.EdgeTtsTaskView.renderKey(task);
+        card.innerHTML = `
+            <div class="task-card-head">
+                <div><span class="task-kind">${task.kind === 'text' ? '文本' : '批量'}</span><h3>${escapeHtml(task.title)}</h3><p>${configLabel(task)}</p></div>
+                <span class="status-badge ${task.status}">${statusLabel(task.status)}</span>
+            </div>
+            <div class="progress-line"><i style="width:${progress}%"></i></div>
+            <div class="task-metrics">
+                <span class="metric"><strong>${task.completed}/${task.total}</strong> 已处理</span>
+                <span class="metric">${task.success_count} 完成</span>${failure}
+            </div>
+            <div class="task-timeline">${taskTimeline(task)}</div>
+            <div class="task-actions">
+                ${['queued', 'processing'].includes(task.status) ? `<button class="secondary-button" data-task-action="cancel" data-task="${task.id}">取消任务</button>` : ''}
+                ${canDownload ? `<a class="primary-button" href="${taskActionUrl(task, 'download')}">${task.kind === 'batch' ? '下载 ZIP' : '下载 MP3'}</a>` : ''}
+                ${task.kind === 'text' && task.audio_url ? `<button class="secondary-button" data-task-action="play" data-task="${task.id}">播放</button>` : ''}
+                <button class="quiet-button details-toggle" data-task-action="details" data-task="${task.id}">${detailsExpanded ? '收起分项' : `查看 ${task.total} 个分项`}</button>
+                ${!['queued', 'processing'].includes(task.status) ? `<button class="quiet-button danger-text" data-task-action="delete" data-task="${task.id}">删除</button>` : ''}
+            </div>
+            <audio class="task-audio" controls hidden></audio>
+            <div class="task-items"${detailsExpanded ? '' : ' hidden'}>${task.items.map(item => taskItemRow(task, item)).join('')}</div>`;
+        return card;
+    }
+
+    function reconcileTaskCards(tasks) {
+        Array.from(elements.taskList.childNodes).forEach(node => {
+            if (!(node instanceof HTMLElement) || !node.classList.contains('task-card')) node.remove();
+        });
+        const existingCards = new Map(
+            Array.from(elements.taskList.querySelectorAll('.task-card'))
+                .map(card => [card.dataset.taskId, card])
+        );
+        const desiredCards = tasks.map(task => {
+            const existing = existingCards.get(String(task.id));
+            if (window.EdgeTtsTaskView.canReuseCard(existing, task)) return existing;
+            const replacement = createTaskCard(task);
+            if (existing) existing.replaceWith(replacement);
+            return replacement;
+        });
+        const desiredSet = new Set(desiredCards);
+        let cursor = elements.taskList.firstElementChild;
+        desiredCards.forEach(card => {
+            if (card === cursor) {
+                cursor = cursor.nextElementSibling;
+                return;
+            }
+            elements.taskList.insertBefore(card, cursor);
+        });
+        Array.from(elements.taskList.children).forEach(card => {
+            if (!desiredSet.has(card)) card.remove();
+        });
+    }
+
     function renderTasks() {
         const filter = elements.taskFilter.value;
         const tasks = filter ? state.tasks.filter(item => item.status === filter) : state.tasks;
         renderTaskSummary(state.tasks);
-        elements.taskList.innerHTML = '';
         elements.taskList.classList.toggle('empty-state', tasks.length === 0);
         if (!tasks.length) {
-            elements.taskList.textContent = filter ? '当前筛选下没有任务' : '暂无任务';
+            elements.taskList.replaceChildren(
+                document.createTextNode(filter ? '当前筛选下没有任务' : '暂无任务')
+            );
             return;
         }
-        tasks.forEach(task => {
-            const progress = task.total ? Math.round(task.completed / task.total * 100) : 0;
-            const failure = task.failed_count ? `<span class="metric danger">${task.failed_count} 失败</span>` : '';
-            const canDownload = task.success_count > 0 && !['queued', 'processing'].includes(task.status);
-            const card = document.createElement('article');
-            card.className = `task-card ${task.status}`;
-            card.innerHTML = `
-                <div class="task-card-head">
-                    <div><span class="task-kind">${task.kind === 'text' ? '文本' : '批量'}</span><h3>${escapeHtml(task.title)}</h3><p>${configLabel(task)}</p></div>
-                    <span class="status-badge ${task.status}">${statusLabel(task.status)}</span>
-                </div>
-                <div class="progress-line"><i style="width:${progress}%"></i></div>
-                <div class="task-metrics">
-                    <span class="metric"><strong>${task.completed}/${task.total}</strong> 已处理</span>
-                    <span class="metric">${task.success_count} 完成</span>${failure}
-                </div>
-                <div class="task-timeline">${taskTimeline(task)}</div>
-                <div class="task-actions">
-                    ${['queued', 'processing'].includes(task.status) ? `<button class="secondary-button" data-task-action="cancel" data-task="${task.id}">取消任务</button>` : ''}
-                    ${canDownload ? `<a class="primary-button" href="${taskActionUrl(task, 'download')}">${task.kind === 'batch' ? '下载 ZIP' : '下载 MP3'}</a>` : ''}
-                    ${task.kind === 'text' && task.audio_url ? `<button class="secondary-button" data-task-action="play" data-task="${task.id}">播放</button>` : ''}
-                    <button class="quiet-button details-toggle" data-task-action="details" data-task="${task.id}">查看 ${task.total} 个分项</button>
-                    ${!['queued', 'processing'].includes(task.status) ? `<button class="quiet-button danger-text" data-task-action="delete" data-task="${task.id}">删除</button>` : ''}
-                </div>
-                <audio class="task-audio" controls hidden></audio>
-                <div class="task-items" hidden>${task.items.map(item => taskItemRow(task, item)).join('')}</div>`;
-            elements.taskList.appendChild(card);
-        });
+        reconcileTaskCards(tasks);
     }
 
     function maybeAutoDownload(task) {
@@ -299,6 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadTasks({quiet = false} = {}) {
         try {
             state.tasks = await api('/tasks?limit=100');
+            window.EdgeTtsTaskView.prune(state.expandedTaskIds, state.tasks);
             state.tasks.forEach(maybeAutoDownload);
             renderTasks();
             const active = state.tasks.some(item => ['queued', 'processing'].includes(item.status));
@@ -333,6 +438,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function appendVoiceConfig(form) {
+        form.append('provider', elements.provider.value);
         form.append('voice', elements.voice.value);
         form.append('speech_rate', elements.rate.value);
         form.append('volume', elements.volume.value);
@@ -368,8 +474,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (action === 'details') {
                 const card = button.closest('.task-card');
                 const items = card.querySelector('.task-items');
-                items.hidden = !items.hidden;
-                button.textContent = items.hidden ? `查看 ${task.total} 个分项` : '收起分项';
+                const expanded = window.EdgeTtsTaskView.toggle(state.expandedTaskIds, task.id);
+                items.hidden = !expanded;
+                button.textContent = expanded ? '收起分项' : `查看 ${task.total} 个分项`;
                 return;
             }
             if (action === 'play') {
@@ -396,7 +503,15 @@ document.addEventListener('DOMContentLoaded', () => {
         $$('.mode-tab').forEach(item => item.classList.toggle('active', item === button));
         $$('.mode-panel').forEach(panel => panel.classList.toggle('active', panel.id === `${button.dataset.mode}-panel`));
     }));
+    if (initialMode === 'batch') {
+        const batchTab = document.querySelector('[data-mode="batch"]');
+        if (batchTab) batchTab.click();
+    }
     elements.voiceSearch.addEventListener('input', renderVoices);
+    elements.provider.addEventListener('change', async () => {
+        updateProviderCapabilities();
+        await loadVoices(elements.provider.value);
+    });
     elements.voice.addEventListener('change', updateVoiceDescription);
     [elements.rate, elements.volume, elements.pitch].forEach(element =>
         element.addEventListener('change', updateActiveConfig)
@@ -441,8 +556,8 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.files.value = '';
         renderFiles();
     });
-    elements.favoriteSelect.addEventListener('change', () => {
-        applyFavorite(state.favorites.find(item => item.id === elements.favoriteSelect.value));
+    elements.favoriteSelect.addEventListener('change', async () => {
+        await applyFavorite(state.favorites.find(item => item.id === elements.favoriteSelect.value));
         $('#delete-favorite-btn').disabled = !elements.favoriteSelect.value;
     });
     $('#save-favorite-btn').addEventListener('click', () => {
@@ -459,6 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     name: $('#favorite-name').value.trim(),
+                    provider: elements.provider.value,
                     voice: elements.voice.value,
                     speech_rate: elements.rate.value,
                     volume: elements.volume.value,
@@ -512,15 +628,26 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     Promise.all([
-        api('/voices'),
+        api('/providers'),
         api('/preferences'),
         api('/config-favorites')
-    ]).then(([voices, preferences, favorites]) => {
-        state.voices = voices;
+    ]).then(async ([providers, preferences, favorites]) => {
+        state.providers = providers;
         state.favorites = favorites;
         state.autoDownload = preferences.auto_download || 'off';
         elements.autoDownload.value = state.autoDownload;
-        renderVoices();
+        elements.provider.replaceChildren(...providers.map(provider => {
+            const option = document.createElement('option');
+            option.value = provider.id;
+            option.textContent = `${provider.name}${provider.local ? ' · 本地' : ' · 在线'}`;
+            option.disabled = provider.local && (!provider.enabled || !provider.available);
+            return option;
+        }));
+        const preferredProvider = config.settings.default_provider || 'edge';
+        elements.provider.value = preferredProvider;
+        if (!elements.provider.value) elements.provider.value = 'edge';
+        updateProviderCapabilities();
+        await loadVoices(elements.provider.value);
         elements.rate.value = config.settings.default_speech_rate || '1.0';
         elements.volume.value = config.settings.default_volume || '1.0';
         elements.pitch.value = config.settings.default_pitch || '0';
@@ -528,8 +655,9 @@ document.addEventListener('DOMContentLoaded', () => {
         updateActiveConfig();
     }).catch(error => notify(error.message, 'error'));
     api('/health').then(data => {
-        $('#network-status').classList.toggle('offline', !data.network_connectivity);
-        $('#status-text').textContent = data.network_connectivity ? '服务可用' : '网络异常';
+        const available = data.status === 'ok';
+        $('#network-status').classList.toggle('offline', !available);
+        $('#status-text').textContent = available ? 'TTS 可用' : '引擎异常';
     }).catch(() => {
         $('#network-status').classList.add('offline');
         $('#status-text').textContent = '服务检查失败';

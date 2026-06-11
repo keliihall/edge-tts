@@ -1,9 +1,19 @@
-# 声笺 v1.0
+# 声笺 v1.2
 
-让文字被听见。声笺是一款基于 Edge TTS 的本地文本转语音工作台，支持多种中文语音角色。
+让文字被听见。声笺是一款支持 Edge TTS、CosyVoice 3 和 Kokoro 的文本转语音工作台。
 
 ## 功能特点
 
+- v1.2 新增极简首页：输入文字即可用默认配置直接创建任务
+- 首页支持保留草稿进入高级工作台，形成“快速开始 → 精细配置 → 任务管理”业务流
+- 全新“纸笺 + 声波”品牌 Logo，统一首页、工作台、登录页和后台视觉
+- 新增 JSONL 结构化运行日志与独立审计日志
+- 后台日志中心支持类型、级别、关键词筛选和原始日志下载
+- 日志等级、单文件容量和滚动备份数量可由管理员配置
+- v1.1 新增统一 TTS Provider 层，可在 Edge TTS、CosyVoice 3、Kokoro 间切换
+- CosyVoice 3 与 Kokoro 通过本机 sidecar 部署，模型运行环境可独立升级
+- 本地 Provider 支持健康检查、动态音色发现、能力声明和任务来源追踪
+- 本地服务地址仅允许回环地址，避免把生成接口暴露到外部网络
 - 支持多种中文语音角色：
   - 普通话：晓晓、晓伊、云健等
   - 方言：东北话（晓北）、陕西话（晓妮）
@@ -53,9 +63,9 @@
 ### 使用打包版本（推荐）
 
 1. 从 [Releases](https://github.com/keliihall/edge-tts/releases) 页面下载对应系统的安装包：
-   - Windows: `ShengJian-v1.0-Windows.zip`
-   - macOS: `ShengJian-v1.0-macOS.zip`
-   - Linux: `ShengJian-v1.0-Linux.tar.gz`
+   - Windows: `ShengJian-v1.2-Windows.zip`
+   - macOS: `ShengJian-v1.2-macOS.zip`
+   - Linux: `ShengJian-v1.2-Linux.tar.gz`
 
 2. 解压下载的文件：
    - Windows: 解压后双击 `shengjian.exe`
@@ -76,10 +86,10 @@ cd edge-tts
 
 2. 创建虚拟环境：
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
+python3 -m venv .venv
+source .venv/bin/activate  # Linux/Mac
 # 或
-.\venv\Scripts\activate  # Windows
+.\.venv\Scripts\activate  # Windows
 ```
 
 3. 安装依赖：
@@ -95,6 +105,19 @@ python run.py
 应用会自动打开默认浏览器访问界面。如果没有自动打开，请访问 http://127.0.0.1:5013
 
 首次打开会进入管理员创建页。账户仅保存在本机 SQLite 数据库中，密码使用安全哈希保存。
+
+登录后 `/` 为极简快速开始首页，`/studio` 为完整创作工作台。首页仅保留文字输入、
+“立即生成”和“高级设置”：前者使用管理员设置的默认引擎和音色，后者会把当前草稿带入工作台。
+
+### 启用本地 TTS
+
+1. 按 [本地 TTS 部署协议](docs/LOCAL_TTS.md) 启动 CosyVoice 3 或 Kokoro sidecar。
+2. 管理员进入“系统设置”，启用对应引擎并填写本机服务地址。
+3. 在诊断页确认引擎状态为“可用”，保存默认引擎和音色。
+4. 回到工作台，在“语音引擎”中选择本地模型。
+
+默认地址为 CosyVoice `http://127.0.0.1:50000`、Kokoro `http://127.0.0.1:50001`。
+模型权重和 GPU 运行时不打包进声笺安装包。
 
 ### 开发与测试
 
@@ -159,16 +182,19 @@ edge-tts/
 ├── app.py              # Flask API、任务队列和 TTS 流程
 ├── auth.py             # 本地认证与管理员接口
 ├── storage.py          # SQLite 状态与用户仓库
+├── tts_providers.py    # Provider 元数据与本地 sidecar 客户端
 ├── version.py          # 统一版本号
 ├── run.py              # 单实例与动态端口启动器
 ├── requirements.txt    # 运行依赖
 ├── requirements-dev.txt # 测试和打包依赖
 ├── static/
+│   ├── brand/          # SVG Logo 与品牌组合标
 │   ├── css/style.css   # 响应式界面样式
 │   ├── fonts/          # Noto Sans SC 字体与开源许可证
 │   └── js/app.js       # 工作台交互
 ├── templates/
-│   ├── index.html      # 主工作台
+│   ├── home.html       # 极简快速开始首页
+│   ├── index.html      # 完整创作工作台
 │   ├── auth.html       # 初始化与登录
 │   └── admin.html      # 用户管理
 ├── tests/              # 自动化测试
@@ -177,8 +203,9 @@ edge-tts/
 ```
 
 API 契约见 [docs/API.md](docs/API.md)。
+本地模型接入与部署协议见 [docs/LOCAL_TTS.md](docs/LOCAL_TTS.md)。
 任务模型与前后台职责见 [docs/TASK_MANAGEMENT.md](docs/TASK_MANAGEMENT.md)。
-v1.0 验收范围与证据见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
+v1.2 更新说明见 [UPDATE_V1.2.md](UPDATE_V1.2.md)。
 
 ### 打包说明
 
@@ -206,7 +233,7 @@ v1.0 验收范围与证据见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
 ## 技术栈
 
 - 后端：Flask
-- 语音转换：Edge TTS
+- 语音转换：Edge TTS + CosyVoice 3/Kokoro 本地 sidecar
 - 前端：HTML5, CSS3, JavaScript
 - 字体：Noto Sans SC（本地打包，SIL Open Font License）
 - 打包工具：PyInstaller
@@ -218,11 +245,12 @@ v1.0 验收范围与证据见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
 - 语速支持0.75x、0.9x、1.0x、1.1x、1.25x、1.5x、2.0x，默认1.0x
 - 音频文件格式为 MP3
 - 转换后的临时文件会按设置自动清理
+- 日志仅记录请求元数据、任务 ID、参数标识和操作结果，不记录输入正文、密码或音频
 - 历史任务在对应临时音频过期后仍保留元数据，但需要重新生成才能再次下载
 - 如果 5013 端口被占用，应用会自动选择后续可用端口
 - 如果已有实例正在运行，重复启动会直接打开已有实例
-- 支持的语音角色可能会随 Edge TTS 服务更新而变化
-- 需要联网使用
+- 支持的语音角色由当前 Provider 动态提供
+- Edge TTS 需要联网；CosyVoice 3 与 Kokoro 可完全离线运行
 
 ## License
 

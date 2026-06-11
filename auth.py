@@ -28,7 +28,16 @@ def validate_password(password):
     return password
 
 
-def register_auth_routes(app, get_repository, error_response, public_user, app_name, app_version):
+def register_auth_routes(
+    app,
+    get_repository,
+    error_response,
+    public_user,
+    app_name,
+    app_version,
+    audit_event=None,
+):
+    audit = audit_event or (lambda *args, **kwargs: None)
     def login_failure_key(username):
         return f"{request.remote_addr or 'local'}:{username.lower()}"
 
@@ -80,7 +89,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
 
         repository = get_repository()
         if repository.user_count() == 0:
-            if request.method == "GET" and request.path in ("/", "/admin"):
+            if request.method == "GET" and request.path in ("/", "/studio", "/admin"):
                 return redirect(url_for("setup_page"))
             return error_response("setup_required", "请先创建管理员账户。", 428)
 
@@ -89,7 +98,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
         if not user or not user.get("active"):
             session.clear()
             g.current_user = None
-            if request.method == "GET" and request.path in ("/", "/admin"):
+            if request.method == "GET" and request.path in ("/", "/studio", "/admin"):
                 return redirect(url_for("login_page"))
             return error_response("authentication_required", "请先登录。", 401)
 
@@ -150,6 +159,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
         session.clear()
         session["user_id"] = user["id"]
         app.logger.info("user_setup user_id=%s username=%s", user["id"], user["username"])
+        audit("user_setup", actor_id=user["id"], user_id=user["id"], username=user["username"])
         return jsonify({"user": public_user(user)}), 201
 
     @app.route('/auth/login', methods=['POST'])
@@ -159,6 +169,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
         password = str(data.get("password") or "")
         failure_key = login_failure_key(username)
         if login_is_rate_limited(failure_key):
+            audit("login_rate_limited", username=username)
             return error_response(
                 "login_rate_limited",
                 "登录失败次数过多，请 5 分钟后重试。",
@@ -167,6 +178,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
         user = get_repository().get_user_by_username(username)
         if not user or not user.get("active") or not check_password_hash(user["password_hash"], password):
             record_login_failure(failure_key)
+            audit("login_failed", username=username)
             return error_response("invalid_login", "用户名或密码不正确。", 401)
         clear_login_failures(failure_key)
         now = time.time()
@@ -175,6 +187,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
         session.clear()
         session["user_id"] = user["id"]
         app.logger.info("user_login user_id=%s username=%s", user["id"], user["username"])
+        audit("user_login", actor_id=user["id"], user_id=user["id"], username=user["username"])
         return jsonify({"user": public_user(user)})
 
     @app.route('/auth/logout', methods=['POST'])
@@ -182,6 +195,7 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
         user_id = session.get("user_id")
         session.clear()
         app.logger.info("user_logout user_id=%s", user_id)
+        audit("user_logout", actor_id=user_id, user_id=user_id)
         return jsonify({"logged_out": True})
 
     @app.route('/auth/me')
@@ -230,6 +244,12 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
             user["id"],
             role,
         )
+        audit(
+            "user_created",
+            user_id=user["id"],
+            username=user["username"],
+            role=role,
+        )
         return jsonify({"user": public_user(user)}), 201
 
     @app.route('/admin/users/<int:user_id>', methods=['PATCH'])
@@ -277,5 +297,12 @@ def register_auth_routes(app, get_repository, error_response, public_user, app_n
             role,
             active,
             password is not None,
+        )
+        audit(
+            "user_updated",
+            user_id=user_id,
+            role=role,
+            active=active,
+            password_reset=password is not None,
         )
         return jsonify({"user": public_user(updated_user)})

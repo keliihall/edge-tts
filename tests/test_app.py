@@ -20,6 +20,7 @@ def client(tmp_path, monkeypatch):
         STATE_PATH=str(tmp_path / "state.json"),
         DATABASE_PATH=str(tmp_path / "state.sqlite3"),
         LOG_PATH=str(tmp_path / "app.log"),
+        AUDIT_LOG_PATH=str(tmp_path / "audit.log"),
         SECRET_KEY_PATH=str(tmp_path / "secret.key"),
         VOICE_CACHE_PATH=str(tmp_path / "voices.json"),
     )
@@ -61,6 +62,7 @@ def client(tmp_path, monkeypatch):
         speech_rate=app_module.DEFAULT_SPEECH_RATE,
         volume=app_module.DEFAULT_VOLUME,
         pitch=app_module.DEFAULT_PITCH,
+        provider="edge",
     ):
         with app_module.create_temp_audio_file() as tmp_file:
             tmp_file.write(b"fake mp3 data")
@@ -190,6 +192,105 @@ def test_convert_creates_async_text_job(client):
     assert data["total"] == 1
     assert data["download_name"]
 
+def test_home_and_studio_form_a_two_step_product_flow(client):
+    home = client.get("/")
+    assert home.status_code == 200
+    home_page = home.get_data(as_text=True)
+    assert 'id="quick-start-form"' in home_page
+    assert 'id="quick-generate-btn"' in home_page
+    assert 'id="open-studio-btn"' in home_page
+    assert 'href="/studio"' in home_page
+    assert "logo-lockup.svg" in home_page
+    assert "最近任务" not in home_page
+    assert "常用入口" not in home_page
+    assert "Edge TTS" not in home_page
+
+    studio = client.get("/studio")
+    assert studio.status_code == 200
+    page = studio.get_data(as_text=True)
+    assert 'id="composer-title"' in page
+    assert "brand/logo-mark.svg" in page
+
+
+def test_admin_can_query_structured_audit_logs(client):
+    app_module.audit_event(
+        "test_audit_event",
+        actor_id=0,
+        job_id="job-for-log-test",
+        text_length=12,
+    )
+
+    response = client.get("/admin/logs?kind=audit&query=job-for-log-test")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["kind"] == "audit"
+    assert data["count"] >= 1
+    entry = next(item for item in data["entries"] if item["event"] == "test_audit_event")
+    assert entry["job_id"] == "job-for-log-test"
+    assert entry["actor_id"] == 0
+
+
+def test_admin_logs_support_filtered_pagination(client):
+    for index in range(25):
+        app_module.audit_event(
+            "pagination_audit_event",
+            actor_id=0,
+            sequence=index,
+            group="pagination-test",
+        )
+
+    first_response = client.get(
+        "/admin/logs?kind=audit&query=pagination-test&page=1&page_size=10"
+    )
+    second_response = client.get(
+        "/admin/logs?kind=audit&query=pagination-test&page=2&page_size=10"
+    )
+
+    assert first_response.status_code == 200
+    first = first_response.get_json()
+    second = second_response.get_json()
+    assert first["total"] == 25
+    assert first["page"] == 1
+    assert first["page_size"] == 10
+    assert first["pages"] == 3
+    assert first["count"] == 10
+    assert first["has_prev"] is False
+    assert first["has_next"] is True
+    assert [entry["sequence"] for entry in first["entries"]] == list(range(24, 14, -1))
+    assert [entry["sequence"] for entry in second["entries"]] == list(range(14, 4, -1))
+
+    last = client.get(
+        "/admin/logs?kind=audit&query=pagination-test&page=99&page_size=10"
+    ).get_json()
+    assert last["page"] == 3
+    assert last["count"] == 5
+    assert last["has_next"] is False
+
+    legacy = client.get(
+        "/admin/logs?kind=audit&query=pagination-test&limit=1"
+    ).get_json()
+    assert legacy["page_size"] == 1
+    assert legacy["count"] == 1
+
+
+def test_log_settings_are_normalized(client):
+    response = client.post(
+        "/settings",
+        json={
+            **app_module.DEFAULT_SETTINGS,
+            "log_level": "debug",
+            "log_max_mb": 999,
+            "log_backup_count": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    settings = response.get_json()
+    assert settings["log_level"] == "DEBUG"
+    assert settings["log_max_mb"] == 50
+    assert settings["log_backup_count"] == 1
+
 
 def test_text_job_downloads_finished_single_chunk(client):
     convert_response = client.post(
@@ -252,6 +353,63 @@ def test_voice_favorites_and_presets(client):
 
     presets = client.get("/presets").get_json()
     assert any(preset["id"] == "story" for preset in presets)
+
+def test_provider_catalog_exposes_edge_and_local_engines(client, monkeypatch):
+    monkeypatch.setattr(app_module, "can_connect", lambda *args, **kwargs: True)
+    app_module.clear_provider_caches()
+
+    response = client.get("/providers")
+
+    assert response.status_code == 200
+    providers = {item["id"]: item for item in response.get_json()}
+    assert set(providers) == {"edge", "cosyvoice", "kokoro"}
+    assert providers["edge"]["available"] is True
+    assert providers["cosyvoice"]["local"] is True
+    assert providers["cosyvoice"]["capabilities"]["voice_cloning"] is True
+    assert providers["kokoro"]["enabled"] is False
+
+
+def test_cosyvoice_provider_voices_and_task_flow(client, monkeypatch):
+    class FakeLocalClient:
+        def health(self):
+            return {"status": "ready", "message": "model loaded"}
+
+        def voices(self):
+            return [{"id": "clone-demo", "name": "演示克隆音色", "gender": "女"}]
+
+    monkeypatch.setattr(app_module, "get_local_tts_client", lambda *args, **kwargs: FakeLocalClient())
+    app_module.save_settings({
+        **app_module.DEFAULT_SETTINGS,
+        "default_provider": "cosyvoice",
+        "cosyvoice_enabled": True,
+        "cosyvoice_default_voice": "clone-demo",
+    })
+
+    voices_response = client.get("/voices?provider=cosyvoice")
+    assert voices_response.status_code == 200
+    assert voices_response.get_json()[0]["id"] == "clone-demo"
+
+    response = client.post(
+        "/convert",
+        data={
+            "provider": "cosyvoice",
+            "voice": "clone-demo",
+            "text": "本地语音任务",
+            "speech_rate": "1.0",
+        },
+    )
+    assert response.status_code == 202
+    task = wait_for_text_job(client, response.get_json()["id"])
+    assert task["provider"] == "cosyvoice"
+    assert task["voice"] == "clone-demo"
+    assert task["success_count"] == 1
+
+
+def test_disabled_local_provider_returns_structured_error(client):
+    response = client.get("/voices?provider=kokoro")
+
+    assert response.status_code == 503
+    assert error_payload(response)["code"] == "provider_unavailable"
 
 
 def test_configuration_favorites_store_complete_voice_settings(client):

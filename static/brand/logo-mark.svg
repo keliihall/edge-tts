@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">声笺</title>
+  <desc id="desc">一张折角纸笺与声音波形组成的标志</desc>
+  <defs>
+    <linearGradient id="paper" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#paper)" d="M14 5h25.5L54 19.5V51a8 8 0 0 1-8 8H14a8 8 0 0 1-8-8V13a8 8 0 0 1 8-8Z"/>
+  <path fill="#A5B4FC" d="M39 5v10a5 5 0 0 0 5 5h10L39 5Z"/>
+  <path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M16 38h4l3-8 5 16 5-23 5 19 4-10 3 6h3"/>
+</svg>

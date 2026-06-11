@@ -24,13 +24,10 @@
     gap: 11px;
 }
 
-.studio-body .brand-mark {
+.studio-body .brand-logo {
     width: 34px;
     height: 34px;
-    border-radius: 6px;
-    background: var(--studio-accent);
-    box-shadow: 0 5px 14px rgba(37, 99, 235, .2);
-    font-size: 16px;
+    filter: drop-shadow(0 5px 10px rgba(37, 99, 235, .18));
 }
 
 .studio-body .brand strong {
@@ -132,6 +129,11 @@
     border-radius: 8px;
     background: #fff;
     box-shadow: 0 8px 30px rgba(42, 72, 120, .06);
+}
+
+.studio-body .task-card.focus-task {
+    border-color: #7da3e8;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .09);
 }
 
 .studio-body .creator-settings {
@@ -271,6 +273,14 @@
     margin: 0;
     color: var(--studio-muted);
     font-size: 12px;
+}
+
+.studio-body .capability-disabled {
+    opacity: 0.48;
+}
+
+.studio-body .capability-disabled select {
+    cursor: not-allowed;
 }
 
 .studio-body .parameter-grid {

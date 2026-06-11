@@ -74,6 +74,7 @@ a { color: inherit; }
     font-size: 18px;
     font-weight: 800;
 }
+.brand-logo { display: block; width: 36px; height: 36px; flex: 0 0 auto; }
 .topbar-actions { display: flex; align-items: center; gap: 12px; }
 .service-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
 .service-state i { width: 8px; height: 8px; border-radius: 50%; background: #16a085; }
@@ -347,12 +348,35 @@ textarea { min-height: 220px; padding: 13px; resize: vertical; font-size: 16px; 
 .settings-form { display: grid; gap: 16px; }
 .settings-form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 16px; border: 1px solid var(--line); border-radius: 7px; }
 .settings-form legend { padding: 0 6px; font-weight: 800; }
+.settings-help { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
 .toggle-field { flex-direction: row !important; align-items: center; align-self: end; min-height: 40px; }
 .toggle-field input { width: 17px; min-height: auto; }
 .diagnostic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .diagnostic-grid div { display: flex; flex-direction: column; gap: 3px; padding: 14px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .diagnostic-grid span { color: var(--muted); font-size: 12px; }
 .diagnostic-grid strong { overflow-wrap: anywhere; }
+.log-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.log-summary code { overflow-wrap: anywhere; }
+.log-list { display: grid; gap: 8px; }
+.log-entry { padding: 12px 14px; border: 1px solid var(--line); border-left: 4px solid #94a3b8; border-radius: 7px; background: #fff; }
+.log-entry.warning { border-left-color: #f59e0b; }
+.log-entry.error { border-left-color: var(--danger); }
+.log-entry.debug { border-left-color: #8b5cf6; }
+.log-entry > div { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.log-entry time { color: var(--muted); font-size: 11px; }
+.log-entry strong { color: var(--ink); font-size: 13px; }
+.log-entry em { padding: 2px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); font-size: 10px; font-style: normal; }
+.log-entry p { margin: 5px 0 0; color: #44536b; font-size: 12px; overflow-wrap: anywhere; }
+.log-entry footer { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 7px; color: var(--muted); font-size: 11px; }
+.log-entry footer span { display: inline-flex; gap: 4px; }
+.log-entry footer b { color: #44536b; }
+.log-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; color: var(--muted); font-size: 12px; }
+.log-pagination > div { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.log-pagination button { min-width: 34px; min-height: 34px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--muted); cursor: pointer; }
+.log-pagination button:hover:not(:disabled), .log-pagination button.active { border-color: var(--brand); color: var(--brand); }
+.log-pagination button.active { background: var(--brand-soft); font-weight: 800; }
+.log-pagination button:disabled { cursor: default; opacity: .42; }
+.pagination-ellipsis { min-width: 24px; text-align: center; }
 
 /* Auth compatibility */
 .auth-body { display: grid; min-height: 100vh; place-items: center; padding: 20px; }
@@ -365,6 +389,10 @@ textarea { min-height: 220px; padding: 13px; resize: vertical; font-size: 16px; 
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 14px; border: 0; border-radius: 6px; background: var(--brand); color: white; cursor: pointer; text-decoration: none; }
 .secondary-btn { border: 1px solid var(--line); background: white; color: var(--ink); }
 .version-badge { color: var(--brand); font-size: 12px; }
+
+@media (max-width: 680px) {
+    .log-pagination { align-items: flex-start; flex-direction: column; }
+}
 
 @media (max-width: 900px) {
     .workspace { grid-template-columns: 1fr; }

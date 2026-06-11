@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 64" role="img" aria-labelledby="title desc">
+  <title id="title">声笺</title>
+  <desc id="desc">让文字被听见</desc>
+  <defs>
+    <linearGradient id="paper" x1="4" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(2 2)">
+    <path fill="url(#paper)" d="M12 3h25.5L52 17.5V49a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8V11a8 8 0 0 1 8-8Z"/>
+    <path fill="#A5B4FC" d="M37 3v10a5 5 0 0 0 5 5h10L37 3Z"/>
+    <path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M14 36h4l3-8 5 16 5-23 5 19 4-10 3 6h3"/>
+  </g>
+  <text x="76" y="31" fill="#10213F" font-family="Noto Sans SC, system-ui, sans-serif" font-size="24" font-weight="800">声笺</text>
+  <text x="76" y="50" fill="#64748B" font-family="Noto Sans SC, system-ui, sans-serif" font-size="12" font-weight="500">让文字被听见</text>
+</svg>

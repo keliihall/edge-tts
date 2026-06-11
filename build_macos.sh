@@ -5,8 +5,6 @@ set -euo pipefail
 PYTHON="${PYTHON:-python3}"
 if [ -x ".venv/bin/python" ]; then
     PYTHON=".venv/bin/python"
-elif [ -x "venv/bin/python" ]; then
-    PYTHON="venv/bin/python"
 fi
 APP_VERSION="v$("$PYTHON" -c 'from version import APP_VERSION; print(APP_VERSION)')"
 APP_PACKAGE_NAME="$("$PYTHON" -c 'from version import APP_PACKAGE_NAME; print(APP_PACKAGE_NAME)')"

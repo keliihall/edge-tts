@@ -3,7 +3,6 @@ setlocal
 
 set PYTHON=python
 if exist .venv\Scripts\python.exe set PYTHON=.venv\Scripts\python.exe
-if exist venv\Scripts\python.exe set PYTHON=venv\Scripts\python.exe
 for /f %%i in ('%PYTHON% -c "from version import APP_VERSION; print(APP_VERSION)"') do set APP_VERSION=v%%i
 for /f %%i in ('%PYTHON% -c "from version import APP_PACKAGE_NAME; print(APP_PACKAGE_NAME)"') do set APP_PACKAGE_NAME=%%i
 for /f %%i in ('%PYTHON% -c "from version import APP_SLUG; print(APP_SLUG)"') do set APP_SLUG=%%i

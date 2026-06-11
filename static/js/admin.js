@@ -1,10 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
     const $ = selector => document.querySelector(selector);
     const $$ = selector => Array.from(document.querySelectorAll(selector));
-    const titles = {overview: '运行概览', tasks: '任务管理', users: '用户管理', settings: '系统设置', diagnostics: '诊断信息'};
+    const titles = {overview: '运行概览', tasks: '任务管理', users: '用户管理', settings: '系统设置', logs: '日志中心', diagnostics: '诊断信息'};
     let tasks = [];
     let users = [];
+    let settingsState = null;
+    let providers = [];
     let passwordUserId = null;
+    let logPage = 1;
 
     function notify(message, type = 'info') {
         const toast = $('#toast');
@@ -120,10 +123,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     async function loadSettings() {
         try {
-            const [settings, voices] = await Promise.all([api('/settings'), api('/voices')]);
-            const voiceSelect = $('#settings-default-voice');
-            voiceSelect.innerHTML = voices.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('');
-            voiceSelect.value = settings.default_voice;
+            const [settings, providerList] = await Promise.all([api('/settings'), api('/providers')]);
+            settingsState = settings;
+            providers = providerList;
+            const providerSelect = $('#settings-default-provider');
+            providerSelect.innerHTML = providers.map(item =>
+                `<option value="${item.id}">${escapeHtml(item.name)}${item.local ? ' · 本地' : ' · 在线'}</option>`
+            ).join('');
+            providerSelect.value = settings.default_provider || 'edge';
+            await loadSettingsVoices(providerSelect.value);
             $('#settings-default-rate').value = settings.default_speech_rate;
             $('#settings-default-volume').value = settings.default_volume;
             $('#settings-default-pitch').value = settings.default_pitch;
@@ -134,8 +142,32 @@ document.addEventListener('DOMContentLoaded', () => {
             $('#settings-history-days').value = settings.history_retention_days;
             $('#settings-temp-hours').value = settings.temp_file_ttl_hours;
             $('#settings-auto-open').checked = settings.auto_open_browser !== false;
+            $('#settings-cosyvoice-enabled').checked = settings.cosyvoice_enabled === true;
+            $('#settings-kokoro-enabled').checked = settings.kokoro_enabled === true;
+            $('#settings-cosyvoice-url').value = settings.cosyvoice_url || '';
+            $('#settings-kokoro-url').value = settings.kokoro_url || '';
+            $('#settings-local-timeout').value = settings.local_tts_timeout_seconds || 300;
+            $('#settings-log-level').value = settings.log_level || 'INFO';
+            $('#settings-log-max-mb').value = settings.log_max_mb || 5;
+            $('#settings-log-backups').value = settings.log_backup_count || 5;
         } catch (error) {
             notify(error.message, 'error');
+        }
+    }
+    async function loadSettingsVoices(providerId) {
+        const voiceSelect = $('#settings-default-voice');
+        voiceSelect.innerHTML = '<option value="">加载音色...</option>';
+        const key = providerId === 'edge' ? 'default_voice' : `${providerId}_default_voice`;
+        const configuredVoice = settingsState?.[key] || '';
+        try {
+            const voices = await api(`/voices?provider=${encodeURIComponent(providerId)}`);
+            voiceSelect.innerHTML = voices.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('');
+            voiceSelect.value = configuredVoice;
+            if (!voiceSelect.value && voices.length) voiceSelect.value = voices[0].id;
+        } catch (error) {
+            voiceSelect.innerHTML = configuredVoice
+                ? `<option value="${escapeHtml(configuredVoice)}">${escapeHtml(configuredVoice)} · 服务未连接</option>`
+                : '<option value="">服务未连接</option>';
         }
     }
     async function loadDiagnostics(force = false) {
@@ -145,6 +177,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 ['版本', data.version], ['整体网络', data.network_connectivity ? '可用' : '异常'],
                 ['Edge TTS', data.edge_tts_available ? '可连接' : '不可连接'],
                 ['代理', data.proxy_configured ? (data.proxy_available ? '已配置且可用' : '已配置但不可用') : '未配置'],
+                ['CosyVoice 3', providerDiagnostic(data.providers?.cosyvoice)],
+                ['Kokoro', providerDiagnostic(data.providers?.kokoro)],
+                ['运行日志', `${formatBytes(data.log_size)} · ${data.log_level}`],
+                ['审计日志', formatBytes(data.audit_log_size)],
                 ['设置文件', data.settings_path], ['临时目录', data.temp_dir]
             ];
             $('#diagnostics-panel').innerHTML = rows.map(([name, value]) =>
@@ -154,17 +190,114 @@ document.addEventListener('DOMContentLoaded', () => {
             notify(error.message, 'error');
         }
     }
+    function providerDiagnostic(status) {
+        if (!status?.enabled) return '未启用';
+        return status.available ? `可用 · ${status.message}` : `不可用 · ${status.message}`;
+    }
+    function logPageNumbers(current, pages) {
+        const candidates = new Set([1, pages, current - 2, current - 1, current, current + 1, current + 2]);
+        const numbers = Array.from(candidates)
+            .filter(page => page >= 1 && page <= pages)
+            .sort((left, right) => left - right);
+        const result = [];
+        numbers.forEach((page, index) => {
+            if (index && page - numbers[index - 1] > 1) result.push(null);
+            result.push(page);
+        });
+        return result;
+    }
+    function renderLogPagination(data) {
+        const pagination = $('#log-pagination');
+        pagination.hidden = data.pages <= 1;
+        if (data.pages <= 1) {
+            pagination.innerHTML = '';
+            return;
+        }
+        const pageButtons = logPageNumbers(data.page, data.pages).map(page =>
+            page === null
+                ? '<span class="pagination-ellipsis" aria-hidden="true">…</span>'
+                : `<button type="button" data-log-page="${page}"${page === data.page ? ' class="active" aria-current="page"' : ''}>${page}</button>`
+        ).join('');
+        pagination.innerHTML = `
+            <span>第 ${data.page} / ${data.pages} 页</span>
+            <div>
+                <button type="button" data-log-page="1"${data.has_prev ? '' : ' disabled'} aria-label="第一页">首页</button>
+                <button type="button" data-log-page="${data.page - 1}"${data.has_prev ? '' : ' disabled'} aria-label="上一页">上一页</button>
+                ${pageButtons}
+                <button type="button" data-log-page="${data.page + 1}"${data.has_next ? '' : ' disabled'} aria-label="下一页">下一页</button>
+                <button type="button" data-log-page="${data.pages}"${data.has_next ? '' : ' disabled'} aria-label="最后一页">末页</button>
+            </div>`;
+    }
+    async function loadLogs(page = logPage) {
+        const kind = $('#log-kind').value;
+        const level = $('#log-level').value;
+        const query = $('#log-query').value.trim();
+        const pageSize = $('#log-page-size').value;
+        const params = new URLSearchParams({kind, page: String(page), page_size: pageSize});
+        if (level) params.set('level', level);
+        if (query) params.set('query', query);
+        try {
+            const data = await api(`/admin/logs?${params}`);
+            logPage = data.page;
+            $('#download-logs-btn').href = `/admin/logs/download?kind=${encodeURIComponent(kind)}`;
+            $('#log-summary').innerHTML = `<span><strong>${data.total}</strong> 条结果</span><span>当前显示 ${data.count} 条</span><span>${formatBytes(data.size)}</span><code>${escapeHtml(data.path)}</code>`;
+            const list = $('#log-list');
+            list.classList.toggle('empty-state', data.entries.length === 0);
+            list.innerHTML = data.entries.length ? data.entries.map(entry => {
+                const coreKeys = new Set(['timestamp', 'level', 'logger', 'event', 'message']);
+                const fields = Object.entries(entry)
+                    .filter(([key]) => !coreKeys.has(key))
+                    .map(([key, value]) => `<span><b>${escapeHtml(key)}</b>${escapeHtml(typeof value === 'object' ? JSON.stringify(value) : value)}</span>`)
+                    .join('');
+                return `<article class="log-entry ${String(entry.level || '').toLowerCase()}">
+                    <div><time>${escapeHtml(entry.timestamp || '旧格式')}</time><strong>${escapeHtml(entry.event || 'message')}</strong><em>${escapeHtml(entry.level || 'INFO')}</em></div>
+                    <p>${escapeHtml(entry.message || '')}</p>
+                    ${fields ? `<footer>${fields}</footer>` : ''}
+                </article>`;
+            }).join('') : '没有匹配的日志';
+            renderLogPagination(data);
+        } catch (error) {
+            notify(error.message, 'error');
+        }
+    }
+    function formatBytes(value) {
+        if (!value) return '0 B';
+        if (value < 1024) return `${value} B`;
+        if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+        return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    }
     $$('.admin-tab').forEach(button => button.addEventListener('click', () => {
         switchView(button.dataset.view);
         if (button.dataset.view === 'settings') loadSettings();
+        if (button.dataset.view === 'logs') loadLogs();
         if (button.dataset.view === 'diagnostics') loadDiagnostics();
     }));
     $('#admin-refresh').addEventListener('click', () => {
         loadAll();
+        if ($('[data-view-panel="logs"]').classList.contains('active')) loadLogs();
         if ($('[data-view-panel="diagnostics"]').classList.contains('active')) loadDiagnostics(true);
     });
     $('#admin-task-kind').addEventListener('change', renderTasks);
     $('#admin-task-status').addEventListener('change', renderTasks);
+    $('#settings-default-provider').addEventListener('change', event => loadSettingsVoices(event.target.value));
+    $('#refresh-logs-btn').addEventListener('click', () => loadLogs(logPage));
+    ['#log-kind', '#log-level', '#log-page-size'].forEach(selector => {
+        $(selector).addEventListener('change', () => {
+            logPage = 1;
+            loadLogs(1);
+        });
+    });
+    $('#log-query').addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            logPage = 1;
+            loadLogs(1);
+        }
+    });
+    $('#log-pagination').addEventListener('click', event => {
+        const button = event.target.closest('[data-log-page]');
+        if (!button || button.disabled) return;
+        loadLogs(Number(button.dataset.logPage));
+    });
     $('.admin-main').addEventListener('click', async event => {
         const button = event.target.closest('[data-admin-task]');
         if (!button) return;
@@ -238,21 +371,34 @@ document.addEventListener('DOMContentLoaded', () => {
     $('#settings-form').addEventListener('submit', async event => {
         event.preventDefault();
         try {
-            await api('/settings', {
+            const defaultProvider = $('#settings-default-provider').value;
+            const voiceKey = defaultProvider === 'edge' ? 'default_voice' : `${defaultProvider}_default_voice`;
+            const payload = {
+                ...(settingsState || {}),
+                default_provider: defaultProvider,
+                default_speech_rate: $('#settings-default-rate').value,
+                default_volume: $('#settings-default-volume').value,
+                default_pitch: $('#settings-default-pitch').value,
+                cosyvoice_enabled: $('#settings-cosyvoice-enabled').checked,
+                kokoro_enabled: $('#settings-kokoro-enabled').checked,
+                cosyvoice_url: $('#settings-cosyvoice-url').value.trim(),
+                kokoro_url: $('#settings-kokoro-url').value.trim(),
+                local_tts_timeout_seconds: Number($('#settings-local-timeout').value),
+                log_level: $('#settings-log-level').value,
+                log_max_mb: Number($('#settings-log-max-mb').value),
+                log_backup_count: Number($('#settings-log-backups').value),
+                proxy_url: $('#settings-proxy').value.trim(),
+                default_save_dir: $('#settings-save-dir').value.trim(),
+                chunk_length: Number($('#settings-chunk-length').value),
+                task_retention_days: Number($('#settings-task-days').value),
+                history_retention_days: Number($('#settings-history-days').value),
+                temp_file_ttl_hours: Number($('#settings-temp-hours').value),
+                auto_open_browser: $('#settings-auto-open').checked
+            };
+            payload[voiceKey] = $('#settings-default-voice').value;
+            settingsState = await api('/settings', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    default_voice: $('#settings-default-voice').value,
-                    default_speech_rate: $('#settings-default-rate').value,
-                    default_volume: $('#settings-default-volume').value,
-                    default_pitch: $('#settings-default-pitch').value,
-                    proxy_url: $('#settings-proxy').value.trim(),
-                    default_save_dir: $('#settings-save-dir').value.trim(),
-                    chunk_length: Number($('#settings-chunk-length').value),
-                    task_retention_days: Number($('#settings-task-days').value),
-                    history_retention_days: Number($('#settings-history-days').value),
-                    temp_file_ttl_hours: Number($('#settings-temp-hours').value),
-                    auto_open_browser: $('#settings-auto-open').checked
-                })
+                body: JSON.stringify(payload)
             });
             notify('系统设置已保存', 'success');
         } catch (error) {

@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>后台管理 · {{ app_name }} v{{ app_version }}</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='brand/logo-mark.svg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body class="admin-body">
     <div class="admin-shell">
         <aside class="admin-sidebar">
             <a class="brand inverse" href="/">
-                <span class="brand-mark">笺</span>
+                <img class="brand-logo" src="{{ url_for('static', filename='brand/logo-mark.svg') }}" alt="">
                 <span><strong>{{ app_name }}</strong><small>后台管理 · v{{ app_version }}</small></span>
             </a>
             <nav class="admin-nav" aria-label="后台导航">
@@ -19,11 +19,13 @@
                 <button class="admin-tab" data-view="tasks" type="button">任务管理</button>
                 <button class="admin-tab" data-view="users" type="button">用户管理</button>
                 <button class="admin-tab" data-view="settings" type="button">系统设置</button>
+                <button class="admin-tab" data-view="logs" type="button">日志中心</button>
                 <button class="admin-tab" data-view="diagnostics" type="button">诊断信息</button>
             </nav>
             <div class="admin-account">
                 <span>{{ current_user.username }}</span>
-                <a href="/">返回前台</a>
+                <a href="/">返回首页</a>
+                <a href="/studio">创作工作台</a>
             </div>
         </aside>
 
@@ -77,10 +79,18 @@
                     <div class="section-heading compact"><div><h2>服务设置</h2><p>只保留影响服务运行、存储和默认行为的配置。</p></div></div>
                     <form id="settings-form" class="settings-form">
                         <fieldset><legend>默认生成参数</legend>
+                            <label>默认引擎<select id="settings-default-provider"></select></label>
                             <label>默认音色<select id="settings-default-voice"></select></label>
                             <label>默认语速<select id="settings-default-rate"><option value="0.75">0.75x</option><option value="0.9">0.9x</option><option value="1.0">1.0x</option><option value="1.1">1.1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2.0">2.0x</option></select></label>
                             <label>默认音量<select id="settings-default-volume"><option value="0.5">50%</option><option value="0.75">75%</option><option value="1.0">100%</option><option value="1.25">125%</option><option value="1.5">150%</option></select></label>
                             <label>默认音高<select id="settings-default-pitch"><option value="-20">低 20Hz</option><option value="-10">低 10Hz</option><option value="0">标准</option><option value="10">高 10Hz</option><option value="20">高 20Hz</option></select></label>
+                        </fieldset>
+                        <fieldset><legend>本地 TTS 引擎</legend>
+                            <label class="toggle-field"><input id="settings-cosyvoice-enabled" type="checkbox"><span>启用 CosyVoice 3</span></label>
+                            <label>CosyVoice 地址<input id="settings-cosyvoice-url" placeholder="http://127.0.0.1:50000"></label>
+                            <label class="toggle-field"><input id="settings-kokoro-enabled" type="checkbox"><span>启用 Kokoro</span></label>
+                            <label>Kokoro 地址<input id="settings-kokoro-url" placeholder="http://127.0.0.1:50001"></label>
+                            <label>本地生成超时（秒）<input id="settings-local-timeout" type="number" min="10" max="1800"></label>
                         </fieldset>
                         <fieldset><legend>网络与文件</legend>
                             <label>代理地址<input id="settings-proxy" placeholder="http://127.0.0.1:7890"></label>
@@ -93,8 +103,33 @@
                             <label>历史展示保留天数<input id="settings-history-days" type="number" min="1" max="365"></label>
                             <label>临时音频保留小时<input id="settings-temp-hours" type="number" min="1" max="168"></label>
                         </fieldset>
+                        <fieldset><legend>日志记录</legend>
+                            <label>运行日志级别<select id="settings-log-level"><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select></label>
+                            <label>单个日志文件上限（MB）<input id="settings-log-max-mb" type="number" min="1" max="50"></label>
+                            <label>滚动备份数量<input id="settings-log-backups" type="number" min="1" max="20"></label>
+                            <p class="settings-help">运行日志记录请求和故障；审计日志记录登录、设置和任务操作。两者均不记录正文、密码或音频。</p>
+                        </fieldset>
                         <button class="primary-button" type="submit">保存系统设置</button>
                     </form>
+                </section>
+            </section>
+
+            <section class="admin-view" data-view-panel="logs">
+                <section class="admin-section">
+                    <div class="section-heading">
+                        <div><h2>日志中心</h2><p>用于运行排障和关键操作追踪，不记录用户正文。</p></div>
+                        <div class="task-toolbar">
+                            <select id="log-kind"><option value="application">运行日志</option><option value="audit">审计日志</option></select>
+                            <select id="log-level"><option value="">全部级别</option><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select>
+                            <input id="log-query" type="search" placeholder="事件、任务 ID、请求 ID">
+                            <select id="log-page-size" aria-label="每页日志数量"><option value="20">每页 20 条</option><option value="50">每页 50 条</option><option value="100">每页 100 条</option></select>
+                            <button id="refresh-logs-btn" class="secondary-button" type="button">刷新</button>
+                            <a id="download-logs-btn" class="secondary-button" href="/admin/logs/download?kind=application">下载 JSONL</a>
+                        </div>
+                    </div>
+                    <div id="log-summary" class="log-summary"></div>
+                    <div id="log-list" class="log-list empty-state">选择条件后查看日志</div>
+                    <nav id="log-pagination" class="log-pagination" aria-label="日志分页" hidden></nav>
                 </section>
             </section>
 

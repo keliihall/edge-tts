@@ -1,4 +1,4 @@
-# 声笺 API v1.0
+# 声笺 API v1.2
 
 所有接口仅监听本机地址。除健康检查和认证初始化外，接口需要有效登录会话。
 
@@ -9,6 +9,14 @@
 - 错误统一为 `{"error":{"code":"...","message":"..."}}`。
 - 每个响应包含 `X-Request-ID`，可用于关联本地日志。
 - 普通用户只能访问自己的任务和历史，管理员可访问全局任务。
+
+## 页面路由
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/` | 极简快速开始首页 |
+| GET | `/studio` | 完整创作工作台 |
+| GET | `/admin` | 管理后台 |
 
 ## 认证
 
@@ -49,7 +57,8 @@
 | POST | `/jobs/<id>/save` | 保存 MP3 到管理员配置的默认目录 |
 | GET | `/jobs/<id>/items/<item_id>/audio` | 播放单个片段 |
 
-`/convert` 使用表单参数：`text`、`voice`、`speech_rate`、`volume`、`pitch`。
+`/convert` 使用表单参数：`text`、`provider`、`voice`、`speech_rate`、`volume`、`pitch`。
+`provider` 可取 `edge`、`cosyvoice` 或 `kokoro`，省略时使用系统默认引擎。
 
 任务响应包含 `created_at`、`started_at`、`elapsed_seconds`、
 `estimated_remaining_seconds`、`finished_at`、`queue_position` 和分项时间字段。
@@ -81,11 +90,21 @@
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
+| GET | `/providers` | 登录用户 | Provider 能力、启用状态与健康状态 |
+| GET | `/voices?provider=<id>` | 登录用户 | 获取指定 Provider 的动态音色目录 |
 | GET | `/settings` | 登录用户 | 普通用户收到脱敏配置 |
 | POST | `/settings` | 管理员 | 更新系统设置 |
 | POST | `/voices/refresh` | 管理员 | 刷新并缓存在线中文音色 |
 | GET | `/health` | 公开 | 本机健康检查 |
 | GET | `/diagnostics` | 登录用户 | 网络与运行状态 |
 | GET | `/diagnostics/download` | 登录用户 | 导出脱敏诊断 ZIP |
+| GET | `/admin/logs` | 管理员 | 查询运行日志或审计日志 |
+| GET | `/admin/logs/download` | 管理员 | 下载当前 JSONL 日志 |
 
 诊断包不包含输入文本、密码哈希或音频文件。
+本地 Provider 的服务端契约见 [LOCAL_TTS.md](LOCAL_TTS.md)。
+
+`/admin/logs` 支持 `kind=application|audit`、`level`、`query`、`page` 和 `page_size`
+参数，按最新日志优先返回分页结果。响应包含 `total`、`pages`、`has_prev` 和
+`has_next`；旧版 `limit` 参数仍可作为 `page_size` 使用。
+日志记录请求元数据、任务 ID、用户 ID、Provider 和操作结果，不记录用户正文。

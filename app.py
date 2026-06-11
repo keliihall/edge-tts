@@ -31,6 +31,14 @@ from auth import (
     register_auth_routes,
 )
 from storage import StateRepository
+from tts_providers import (
+    LocalTTSClient,
+    PROVIDER_DEFINITIONS,
+    PROVIDER_IDS,
+    ProviderError,
+    ProviderUnavailable,
+    validate_loopback_url,
+)
 from version import APP_NAME, APP_VERSION
 
 app = Flask(__name__)
@@ -107,9 +115,26 @@ NETWORK_DIAGNOSTICS_CACHE = {
     "checked_at": 0,
     "data": None,
 }
+AUDIT_LOGGER = logging.getLogger("shengjian.audit")
+LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
+PROVIDER_CACHE_LOCK = threading.RLock()
+PROVIDER_CACHE_TTL_SECONDS = 15
+PROVIDER_STATUS_CACHE = {}
+PROVIDER_VOICE_CACHE = {}
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="edge-tts")
 DEFAULT_SETTINGS = {
+    "default_provider": "edge",
     "default_voice": "zh-CN-XiaoxiaoNeural",
+    "cosyvoice_default_voice": "",
+    "kokoro_default_voice": "",
+    "cosyvoice_enabled": False,
+    "kokoro_enabled": False,
+    "cosyvoice_url": "http://127.0.0.1:50000",
+    "kokoro_url": "http://127.0.0.1:50001",
+    "local_tts_timeout_seconds": 300,
+    "log_level": "INFO",
+    "log_max_mb": 5,
+    "log_backup_count": 5,
     "default_speech_rate": DEFAULT_SPEECH_RATE,
     "default_volume": DEFAULT_VOLUME,
     "default_pitch": DEFAULT_PITCH,
@@ -147,6 +172,7 @@ VOICE_PRESETS = [
     {
         "id": "short_video",
         "name": "短视频口播",
+        "provider": "edge",
         "voice": "zh-CN-YunxiNeural",
         "speech_rate": "1.1",
         "volume": "1.25",
@@ -155,6 +181,7 @@ VOICE_PRESETS = [
     {
         "id": "news",
         "name": "新闻播报",
+        "provider": "edge",
         "voice": "zh-CN-YunyangNeural",
         "speech_rate": "1.0",
         "volume": "1.0",
@@ -163,6 +190,7 @@ VOICE_PRESETS = [
     {
         "id": "story",
         "name": "小说旁白",
+        "provider": "edge",
         "voice": "zh-CN-XiaoxiaoNeural",
         "speech_rate": "0.9",
         "volume": "1.0",
@@ -171,6 +199,7 @@ VOICE_PRESETS = [
     {
         "id": "kids",
         "name": "儿童故事",
+        "provider": "edge",
         "voice": "zh-CN-XiaoyiNeural",
         "speech_rate": "0.9",
         "volume": "1.25",
@@ -179,6 +208,7 @@ VOICE_PRESETS = [
     {
         "id": "cantonese",
         "name": "粤语口播",
+        "provider": "edge",
         "voice": "zh-HK-HiuGaaiNeural",
         "speech_rate": "1.0",
         "volume": "1.0",
@@ -188,11 +218,11 @@ VOICE_PRESETS = [
 
 def error_response(code, message, status_code=400, detail=None):
     """返回统一的 API 错误格式。"""
-    app.logger.warning(
-        "api_error code=%s status=%s request_id=%s",
-        code,
-        status_code,
-        getattr(g, "request_id", "-") if has_request_context() else "-",
+    log_event(
+        "WARNING",
+        "api_error",
+        code=code,
+        status=status_code,
     )
     payload = {
         "error": {
@@ -237,6 +267,12 @@ def get_log_path():
         return configured_path
     return os.path.join(get_app_temp_dir(), "edge-tts-web.log")
 
+def get_audit_log_path():
+    configured_path = app.config.get("AUDIT_LOG_PATH")
+    if configured_path:
+        return configured_path
+    return os.path.join(get_app_temp_dir(), "edge-tts-audit.log")
+
 def get_secret_key_path():
     configured_path = app.config.get("SECRET_KEY_PATH")
     if configured_path:
@@ -264,26 +300,134 @@ def configure_secret_key():
         PERMANENT_SESSION_LIFETIME=12 * 60 * 60,
     )
 
-def configure_logging():
-    """配置本地滚动日志，避免记录完整用户文本。"""
-    log_path = get_log_path()
-    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-    for handler in app.logger.handlers:
-        if getattr(handler, "baseFilename", None) == os.path.abspath(log_path):
-            return
+class JsonLogFormatter(logging.Formatter):
+    """将运行事件写为便于检索和导出的 JSONL。"""
+
+    def format(self, record):
+        payload = {
+            "timestamp": datetime.fromtimestamp(record.created).astimezone().isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "event": getattr(record, "event", "message"),
+            "message": record.getMessage(),
+        }
+        fields = getattr(record, "fields", None)
+        if isinstance(fields, dict):
+            payload.update(fields)
+        request_id = getattr(record, "request_id", None)
+        if request_id:
+            payload["request_id"] = request_id
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+def normalize_log_level(value):
+    level = str(value or "INFO").strip().upper()
+    return level if level in LOG_LEVELS else "INFO"
+
+def configure_rotating_logger(logger, path, level, max_bytes, backup_count, kind):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    for handler in list(logger.handlers):
+        if getattr(handler, "_shengjian_kind", None) == kind:
+            logger.removeHandler(handler)
+            handler.close()
     handler = RotatingFileHandler(
-        log_path,
-        maxBytes=2 * 1024 * 1024,
-        backupCount=3,
+        path,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(message)s",
-        "%Y-%m-%dT%H:%M:%S",
-    ))
-    handler.setLevel(logging.INFO)
-    app.logger.addHandler(handler)
-    app.logger.setLevel(logging.INFO)
+    handler._shengjian_kind = kind
+    handler.setFormatter(JsonLogFormatter())
+    handler.setLevel(level)
+    logger.addHandler(handler)
+    logger.setLevel(level)
+
+def configure_logging():
+    """配置运行日志与审计日志，严禁记录正文、密码和音频内容。"""
+    settings = get_settings()
+    level_name = normalize_log_level(settings.get("log_level"))
+    level = getattr(logging, level_name)
+    max_bytes = normalize_int(settings.get("log_max_mb"), 5, 1, 50) * 1024 * 1024
+    backup_count = normalize_int(settings.get("log_backup_count"), 5, 1, 20)
+    configure_rotating_logger(
+        app.logger,
+        get_log_path(),
+        level,
+        max_bytes,
+        backup_count,
+        "application",
+    )
+    configure_rotating_logger(
+        AUDIT_LOGGER,
+        get_audit_log_path(),
+        logging.INFO,
+        max_bytes,
+        backup_count,
+        "audit",
+    )
+    AUDIT_LOGGER.propagate = False
+
+def log_event(level, event, message="", **fields):
+    logger_method = getattr(app.logger, normalize_log_level(level).lower())
+    logger_method(
+        message or event,
+        extra={
+            "event": event,
+            "fields": fields,
+            "request_id": getattr(g, "request_id", None) if has_request_context() else None,
+        },
+    )
+
+def audit_event(event, actor_id=None, **fields):
+    if actor_id is None and has_request_context():
+        actor_id = (getattr(g, "current_user", None) or {}).get("id")
+    payload = {"actor_id": actor_id, **fields}
+    if has_request_context():
+        payload["remote_addr"] = request.remote_addr
+        payload["method"] = request.method
+        payload["path"] = request.path
+    AUDIT_LOGGER.info(
+        event,
+        extra={
+            "event": event,
+            "fields": payload,
+            "request_id": getattr(g, "request_id", None) if has_request_context() else None,
+        },
+    )
+
+def log_files_for_kind(kind):
+    path = get_audit_log_path() if kind == "audit" else get_log_path()
+    backup_count = get_settings().get("log_backup_count", 5)
+    candidates = [f"{path}.{index}" for index in range(backup_count, 0, -1)] + [path]
+    return [candidate for candidate in candidates if os.path.isfile(candidate)]
+
+def read_log_entries(kind="application", level="", query=""):
+    normalized_level = str(level or "").upper()
+    normalized_query = str(query or "").strip().lower()[:100]
+    entries = []
+    for path in log_files_for_kind(kind):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as log_file:
+                for line in log_file:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        entry = {
+                            "timestamp": "",
+                            "level": "INFO",
+                            "event": "legacy",
+                            "message": line,
+                        }
+                    if normalized_level and entry.get("level") != normalized_level:
+                        continue
+                    if normalized_query and normalized_query not in json.dumps(entry, ensure_ascii=False).lower():
+                        continue
+                    entries.append(entry)
+        except OSError:
+            continue
+    return entries
 
 def get_repository():
     path = get_database_path()
@@ -355,21 +499,24 @@ def load_user_state():
         text_job_list = legacy_payload.get("text_jobs") or []
 
     favorites = [
-        voice_id for voice_id in preferences.get("favorite_voices", [])
-        if voice_id in AVAILABLE_VOICE_IDS
+        voice_key for voice_key in preferences.get("favorite_voices", [])
+        if is_valid_voice_preference_key(voice_key)
     ]
     recent = [
-        voice_id for voice_id in preferences.get("recent_voices", [])
-        if voice_id in AVAILABLE_VOICE_IDS
+        voice_key for voice_key in preferences.get("recent_voices", [])
+        if is_valid_voice_preference_key(voice_key)
     ][:8]
     history = [
         item for item in history
         if isinstance(item, dict) and item.get("id") and item.get("job_id")
     ][:HISTORY_LIMIT]
+    for item in history:
+        item.setdefault("provider", "edge")
     text_jobs = {}
     for job in text_job_list:
         if not isinstance(job, dict) or not job.get("id") or not isinstance(job.get("items"), list):
             continue
+        job.setdefault("provider", "edge")
         if job.get("status") in ("queued", "processing"):
             job["status"] = "finished"
             job["finished_at"] = time.time()
@@ -394,6 +541,7 @@ def load_user_state():
     for job in batch_job_list:
         if not isinstance(job, dict) or not job.get("id") or not isinstance(job.get("items"), list):
             continue
+        job.setdefault("provider", "edge")
         restore_interrupted_batch_job(job)
         batch_jobs[job["id"]] = job
 
@@ -442,13 +590,169 @@ def normalize_int(value, fallback, minimum=None, maximum=None):
         normalized = min(maximum, normalized)
     return normalized
 
+def validate_provider_id(provider_id):
+    normalized = str(provider_id or "edge").strip().lower()
+    if normalized not in PROVIDER_IDS:
+        raise ValueError("不支持的 TTS 引擎。")
+    return normalized
+
+def provider_enabled(provider_id, settings=None):
+    provider_id = validate_provider_id(provider_id)
+    if provider_id == "edge":
+        return True
+    settings = settings or get_settings()
+    return normalize_bool(settings.get(f"{provider_id}_enabled", False))
+
+def default_voice_for_provider(provider_id, settings=None):
+    provider_id = validate_provider_id(provider_id)
+    settings = settings or get_settings()
+    if provider_id == "edge":
+        return settings.get("default_voice") or DEFAULT_SETTINGS["default_voice"]
+    return str(settings.get(f"{provider_id}_default_voice") or "").strip()
+
+def get_local_tts_client(provider_id, settings=None, timeout=None):
+    provider_id = validate_provider_id(provider_id)
+    if provider_id == "edge":
+        raise ValueError("Edge TTS 不使用本地 sidecar。")
+    settings = settings or get_settings()
+    base_url = (
+        os.environ.get(f"{provider_id.upper()}_TTS_URL")
+        or settings.get(f"{provider_id}_url")
+        or DEFAULT_SETTINGS[f"{provider_id}_url"]
+    )
+    request_timeout = timeout if timeout is not None else normalize_int(
+        settings.get("local_tts_timeout_seconds"),
+        DEFAULT_SETTINGS["local_tts_timeout_seconds"],
+        10,
+        1800,
+    )
+    return LocalTTSClient(base_url=base_url, timeout=request_timeout)
+
+def clear_provider_caches():
+    with PROVIDER_CACHE_LOCK:
+        PROVIDER_STATUS_CACHE.clear()
+        PROVIDER_VOICE_CACHE.clear()
+
+def get_provider_status(provider_id, force=False):
+    provider_id = validate_provider_id(provider_id)
+    now = time.time()
+    with PROVIDER_CACHE_LOCK:
+        cached = PROVIDER_STATUS_CACHE.get(provider_id)
+        if cached and not force and now - cached["checked_at"] < PROVIDER_CACHE_TTL_SECONDS:
+            return cached["data"].copy()
+
+    settings = get_settings()
+    enabled = provider_enabled(provider_id, settings)
+    status = {
+        "provider": provider_id,
+        "enabled": enabled,
+        "available": False,
+        "message": "",
+        "checked_at": now,
+    }
+    if provider_id == "edge":
+        configured_proxy = get_configured_proxy_url()
+        proxy_available = is_proxy_available(configured_proxy) if configured_proxy else False
+        service_available = can_connect(
+            "speech.platform.bing.com",
+            443,
+            timeout=NETWORK_CONNECT_TIMEOUT_SECONDS,
+        )
+        status.update({
+            "available": proxy_available or service_available,
+            "message": "Edge TTS 可用" if proxy_available or service_available else "无法连接 Edge TTS",
+        })
+    elif not enabled:
+        status["message"] = "未启用"
+    else:
+        try:
+            health = get_local_tts_client(provider_id, settings, timeout=3).health()
+            health_status = str(health.get("status") or "ok").lower()
+            available = health_status in {"ok", "ready", "healthy"}
+            status.update({
+                "available": available,
+                "message": str(health.get("message") or ("服务可用" if available else "服务未就绪")),
+            })
+        except (ProviderError, ValueError) as error:
+            status["message"] = str(error)
+
+    with PROVIDER_CACHE_LOCK:
+        PROVIDER_STATUS_CACHE[provider_id] = {
+            "checked_at": now,
+            "data": status.copy(),
+        }
+    return status
+
+def ensure_provider_available(provider_id):
+    provider_id = validate_provider_id(provider_id)
+    status = get_provider_status(provider_id)
+    if not status["enabled"]:
+        raise ProviderUnavailable(f"{PROVIDER_DEFINITIONS[provider_id]['name']} 尚未启用。")
+    if not status["available"]:
+        raise ProviderUnavailable(status["message"] or "TTS 引擎当前不可用。")
+    return status
+
+def get_provider_voices(provider_id, force=False):
+    provider_id = validate_provider_id(provider_id)
+    if provider_id == "edge":
+        with VOICE_CATALOG_LOCK:
+            return [{**voice, "provider": "edge"} for voice in AVAILABLE_VOICES]
+
+    ensure_provider_available(provider_id)
+    now = time.time()
+    with PROVIDER_CACHE_LOCK:
+        cached = PROVIDER_VOICE_CACHE.get(provider_id)
+        if cached and not force and now - cached["checked_at"] < PROVIDER_CACHE_TTL_SECONDS:
+            return [voice.copy() for voice in cached["voices"]]
+
+    voices = [
+        {**voice, "provider": provider_id}
+        for voice in get_local_tts_client(provider_id, timeout=15).voices()
+    ]
+    if not voices:
+        raise ProviderError("本地 TTS 服务没有返回可用音色。")
+    with PROVIDER_CACHE_LOCK:
+        PROVIDER_VOICE_CACHE[provider_id] = {
+            "checked_at": now,
+            "voices": [voice.copy() for voice in voices],
+        }
+    return voices
+
+def provider_metadata(provider_id, force=False):
+    provider_id = validate_provider_id(provider_id)
+    definition = PROVIDER_DEFINITIONS[provider_id]
+    status = get_provider_status(provider_id, force=force)
+    return {
+        **definition,
+        **status,
+        "default_voice": default_voice_for_provider(provider_id),
+    }
+
 def normalize_settings(raw_settings):
     """校验并标准化用户设置。"""
     settings = DEFAULT_SETTINGS.copy()
     if raw_settings:
         settings.update(raw_settings)
 
-    settings["default_voice"] = validate_voice_id(settings.get("default_voice"))
+    settings["default_provider"] = validate_provider_id(settings.get("default_provider"))
+    settings["cosyvoice_enabled"] = normalize_bool(settings.get("cosyvoice_enabled"))
+    settings["kokoro_enabled"] = normalize_bool(settings.get("kokoro_enabled"))
+    settings["cosyvoice_url"] = validate_loopback_url(settings.get("cosyvoice_url"))
+    settings["kokoro_url"] = validate_loopback_url(settings.get("kokoro_url"))
+    settings["local_tts_timeout_seconds"] = normalize_int(
+        settings.get("local_tts_timeout_seconds"),
+        DEFAULT_SETTINGS["local_tts_timeout_seconds"],
+        10,
+        1800,
+    )
+    settings["log_level"] = normalize_log_level(settings.get("log_level"))
+    settings["log_max_mb"] = normalize_int(settings.get("log_max_mb"), 5, 1, 50)
+    settings["log_backup_count"] = normalize_int(settings.get("log_backup_count"), 5, 1, 20)
+    settings["default_voice"] = validate_voice_id(settings.get("default_voice"), "edge")
+    settings["cosyvoice_default_voice"] = str(settings.get("cosyvoice_default_voice") or "").strip()
+    settings["kokoro_default_voice"] = str(settings.get("kokoro_default_voice") or "").strip()
+    if not provider_enabled(settings["default_provider"], settings):
+        settings["default_provider"] = "edge"
     settings["default_speech_rate"] = normalize_speech_rate(settings.get("default_speech_rate"))
     settings["default_volume"] = normalize_volume(settings.get("default_volume"))
     settings["default_pitch"] = normalize_pitch(settings.get("default_pitch"))
@@ -495,7 +799,10 @@ def save_settings(new_settings):
     with SETTINGS_LOCK:
         APP_SETTINGS = normalized_settings
         write_json_atomic(settings_path, APP_SETTINGS)
-        return APP_SETTINGS.copy()
+        saved_settings = APP_SETTINGS.copy()
+    clear_provider_caches()
+    configure_logging()
+    return saved_settings
 
 def get_settings():
     with SETTINGS_LOCK:
@@ -508,10 +815,14 @@ def settings_for_user(user):
         settings["default_save_dir"] = ""
     return settings
 
-def validate_voice_id(voice_id):
-    """校验音色 ID 是否在当前白名单中。"""
-    normalized_voice_id = (voice_id or "zh-CN-XiaoxiaoNeural").strip()
-    if normalized_voice_id not in AVAILABLE_VOICE_IDS:
+def validate_voice_id(voice_id, provider_id="edge"):
+    """校验指定 Provider 的音色 ID。"""
+    provider_id = validate_provider_id(provider_id)
+    fallback = DEFAULT_SETTINGS["default_voice"] if provider_id == "edge" else ""
+    normalized_voice_id = str(voice_id or fallback).strip()
+    if not normalized_voice_id:
+        raise ValueError("请选择可用音色。")
+    if provider_id == "edge" and normalized_voice_id not in AVAILABLE_VOICE_IDS:
         raise ValueError("不支持的语音角色，请从列表中选择可用音色。")
     return normalized_voice_id
 
@@ -584,13 +895,24 @@ def voice_by_id(voice_id):
     with VOICE_CATALOG_LOCK:
         return next((voice for voice in AVAILABLE_VOICES if voice["id"] == voice_id), None)
 
-def remember_recent_voice(voice_id):
+def voice_preference_key(provider_id, voice_id):
+    provider_id = validate_provider_id(provider_id)
+    return voice_id if provider_id == "edge" else f"{provider_id}:{voice_id}"
+
+def is_valid_voice_preference_key(value):
+    value = str(value or "")
+    if value in AVAILABLE_VOICE_IDS:
+        return True
+    provider_id, separator, voice_id = value.partition(":")
+    return bool(separator and provider_id in PROVIDER_IDS[1:] and voice_id)
+
+def remember_recent_voice(voice_id, provider_id="edge"):
     """记录最近使用音色。"""
-    if voice_id not in AVAILABLE_VOICE_IDS:
-        return
+    voice_id = validate_voice_id(voice_id, provider_id)
+    voice_key = voice_preference_key(provider_id, voice_id)
     with PREFERENCES_LOCK:
-        recent = [current for current in USER_PREFERENCES["recent_voices"] if current != voice_id]
-        recent.insert(0, voice_id)
+        recent = [current for current in USER_PREFERENCES["recent_voices"] if current != voice_key]
+        recent.insert(0, voice_key)
         USER_PREFERENCES["recent_voices"] = recent[:8]
     save_user_state()
 
@@ -610,7 +932,11 @@ def public_user_workspace_preferences(user):
         favorites = USER_PREFERENCES["config_favorites"].get(user_key, [])
         auto_download = USER_PREFERENCES["auto_download"].get(user_key, "off")
         return {
-            "config_favorites": [item.copy() for item in favorites],
+            "config_favorites": [
+                {"provider": "edge", **item}
+                for item in favorites
+                if isinstance(item, dict)
+            ],
             "auto_download": auto_download,
         }
 
@@ -624,12 +950,13 @@ def save_user_workspace_preferences(user, *, favorites=None, auto_download=None)
     save_user_state()
     return public_user_workspace_preferences(user)
 
-def set_favorite_voice(voice_id, favorite):
-    validate_voice_id(voice_id)
+def set_favorite_voice(voice_id, favorite, provider_id="edge"):
+    voice_id = validate_voice_id(voice_id, provider_id)
+    voice_key = voice_preference_key(provider_id, voice_id)
     with PREFERENCES_LOCK:
-        favorites = [current for current in USER_PREFERENCES["favorite_voices"] if current != voice_id]
+        favorites = [current for current in USER_PREFERENCES["favorite_voices"] if current != voice_key]
         if favorite:
-            favorites.insert(0, voice_id)
+            favorites.insert(0, voice_key)
         USER_PREFERENCES["favorite_voices"] = favorites
         preferences = {
             "favorite_voices": list(USER_PREFERENCES["favorite_voices"]),
@@ -656,6 +983,7 @@ def add_history_item(job):
         "owner_id": job.get("owner_id"),
         "title": job.get("download_name") or "speech",
         "summary": job.get("text_summary") or "",
+        "provider": job.get("provider", "edge"),
         "voice": job["voice"],
         "speech_rate": job["speech_rate"],
         "volume": job.get("volume", DEFAULT_VOLUME),
@@ -951,6 +1279,7 @@ def public_text_job(job):
     return {
         "id": job["id"],
         "status": job["status"],
+        "provider": job.get("provider", "edge"),
         "voice": job["voice"],
         "speech_rate": job["speech_rate"],
         "volume": job.get("volume", DEFAULT_VOLUME),
@@ -1009,6 +1338,7 @@ def create_text_job(
     volume=DEFAULT_VOLUME,
     pitch=DEFAULT_PITCH,
     owner_id=None,
+    provider="edge",
 ):
     """创建异步文本转语音任务。"""
     chunk_length = get_settings().get("chunk_length", MAX_CHUNK_LENGTH)
@@ -1043,6 +1373,7 @@ def create_text_job(
         "id": job_id,
         "owner_id": owner_id,
         "status": "queued",
+        "provider": validate_provider_id(provider),
         "voice": voice,
         "speech_rate": speech_rate,
         "volume": volume,
@@ -1132,12 +1463,13 @@ def process_text_job(job_id, only_item_id=None):
             get_repository().save_job("text", job)
 
         try:
-            audio_path = generate_speech_with_retries(
+            audio_path = generate_speech_for_provider(
                 item["text"],
                 job["voice"],
                 job["speech_rate"],
                 job.get("volume", DEFAULT_VOLUME),
                 job.get("pitch", DEFAULT_PITCH),
+                job.get("provider", "edge"),
             )
             file_size = os.path.getsize(audio_path)
 
@@ -1314,7 +1646,7 @@ def get_configured_proxy_url():
 
 def check_network_connectivity():
     """检查网络连接状态"""
-    return collect_network_diagnostics()["network_connectivity"]
+    return get_provider_status("edge")["available"]
 
 def collect_network_diagnostics(force=False):
     """返回代理和 Edge TTS 服务诊断信息。"""
@@ -1346,8 +1678,23 @@ def collect_network_diagnostics(force=False):
         "settings_path": get_settings_path(),
         "database_path": get_database_path(),
         "log_path": get_log_path(),
+        "audit_log_path": get_audit_log_path(),
+        "log_level": get_settings().get("log_level"),
+        "log_size": os.path.getsize(get_log_path()) if os.path.exists(get_log_path()) else 0,
+        "audit_log_size": os.path.getsize(get_audit_log_path()) if os.path.exists(get_audit_log_path()) else 0,
         "temp_dir": get_app_temp_dir(),
         "checked_at": now,
+    }
+    diagnostics["providers"] = {
+        "edge": {
+            "provider": "edge",
+            "enabled": True,
+            "available": diagnostics["network_connectivity"],
+            "message": "Edge TTS 可用" if diagnostics["network_connectivity"] else "无法连接 Edge TTS",
+            "checked_at": now,
+        },
+        "cosyvoice": get_provider_status("cosyvoice", force=force),
+        "kokoro": get_provider_status("kokoro", force=force),
     }
     with NETWORK_DIAGNOSTICS_LOCK:
         NETWORK_DIAGNOSTICS_CACHE["checked_at"] = now
@@ -1389,6 +1736,11 @@ def create_diagnostics_archive():
             with open(log_path, "rb") as log_file:
                 log_data = log_file.read()[-2 * 1024 * 1024:]
             zip_file.writestr("edge-tts-web.log", log_data)
+        audit_log_path = get_audit_log_path()
+        if os.path.exists(audit_log_path):
+            with open(audit_log_path, "rb") as audit_log_file:
+                audit_log_data = audit_log_file.read()[-2 * 1024 * 1024:]
+            zip_file.writestr("edge-tts-audit.log", audit_log_data)
         zip_file.writestr(
             "README.txt",
             "诊断包包含版本、系统、配置摘要、网络检测和最近日志，不包含输入文本或音频文件。\n",
@@ -1434,22 +1786,62 @@ def edge_volume_from_value(value):
 def edge_pitch_from_value(value):
     return PITCH_OPTIONS[normalize_pitch(value)]
 
+def resolve_provider_and_voice(provider_value=None, voice_value=None):
+    settings = get_settings()
+    provider_id = validate_provider_id(provider_value or settings.get("default_provider"))
+    if provider_id == "edge":
+        if not check_network_connectivity():
+            raise ProviderUnavailable("网络连接异常，无法连接到 Edge TTS。请检查网络或代理后重试。")
+        voice_id = validate_voice_id(
+            voice_value or default_voice_for_provider(provider_id, settings),
+            provider_id,
+        )
+        return provider_id, voice_id
+
+    voices = get_provider_voices(provider_id)
+    voice_id = str(
+        voice_value
+        or default_voice_for_provider(provider_id, settings)
+        or voices[0]["id"]
+    ).strip()
+    voice_id = validate_voice_id(voice_id, provider_id)
+    if voice_id not in {voice["id"] for voice in voices}:
+        raise ValueError("所选音色不在当前 TTS 引擎的可用音色列表中。")
+    return provider_id, voice_id
+
+@app.route('/providers')
+def get_providers():
+    force = request.args.get("force") in ("1", "true", "yes")
+    return jsonify([
+        provider_metadata(provider_id, force=force)
+        for provider_id in PROVIDER_IDS
+    ])
+
 @app.route('/voices')
 def get_voices():
-    """获取可用的语音列表"""
+    """获取指定 Provider 的可用语音列表。"""
+    try:
+        provider_id = validate_provider_id(request.args.get("provider") or "edge")
+        voices = get_provider_voices(
+            provider_id,
+            force=request.args.get("force") in ("1", "true", "yes"),
+        )
+    except ValueError as error:
+        return error_response("invalid_provider", str(error), 400)
+    except ProviderError as error:
+        return error_response("provider_unavailable", str(error), 503)
+
     preferences = public_preferences()
     favorite_set = set(preferences["favorite_voices"])
     recent_set = set(preferences["recent_voices"])
-    with VOICE_CATALOG_LOCK:
-        voices = [
-            {
-                **voice,
-                "favorite": voice["id"] in favorite_set,
-                "recent": voice["id"] in recent_set,
-            }
-            for voice in AVAILABLE_VOICES
-        ]
-    return jsonify(voices)
+    return jsonify([
+        {
+            **voice,
+            "favorite": voice_preference_key(provider_id, voice["id"]) in favorite_set,
+            "recent": voice_preference_key(provider_id, voice["id"]) in recent_set,
+        }
+        for voice in voices
+    ])
 
 @app.route('/voices/refresh', methods=['POST'])
 def refresh_voices():
@@ -1486,7 +1878,8 @@ def update_favorite_voice(voice_id):
     data = request.get_json(silent=True) or {}
     favorite = bool(data.get("favorite", True))
     try:
-        preferences = set_favorite_voice(voice_id, favorite)
+        provider_id = validate_provider_id(data.get("provider") or "edge")
+        preferences = set_favorite_voice(voice_id, favorite, provider_id)
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
     return jsonify(preferences)
@@ -1517,10 +1910,12 @@ def config_favorites():
     if not name or len(name) > 30:
         return error_response("invalid_favorite_name", "收藏夹名称需为 1-30 个字符。", 400)
     try:
+        provider_id = validate_provider_id(data.get("provider") or "edge")
         favorite = {
             "id": uuid.uuid4().hex,
             "name": name,
-            "voice": validate_voice_id(data.get("voice")),
+            "provider": provider_id,
+            "voice": validate_voice_id(data.get("voice"), provider_id),
             "speech_rate": normalize_speech_rate(data.get("speech_rate")),
             "volume": normalize_volume(data.get("volume")),
             "pitch": normalize_pitch(data.get("pitch")),
@@ -1552,14 +1947,19 @@ def health_check():
     """健康检查接口"""
     diagnostics = collect_network_diagnostics()
     network_ok = diagnostics["network_connectivity"]
+    provider_ok = any(
+        status.get("enabled") and status.get("available")
+        for status in diagnostics["providers"].values()
+    )
     return jsonify({
         'version': APP_VERSION,
-        'status': 'ok' if network_ok else 'network_error',
+        'status': 'ok' if provider_ok else 'provider_error',
         'network_connectivity': network_ok,
         'proxy_configured': diagnostics["proxy_configured"],
         'proxy_available': diagnostics["proxy_available"],
         'edge_tts_available': diagnostics["edge_tts_available"],
-        'message': '服务正常' if network_ok else '网络连接异常，可能无法使用语音转换功能'
+        'providers': diagnostics["providers"],
+        'message': '服务正常' if provider_ok else '当前没有可用的 TTS 引擎'
     })
 
 @app.route('/diagnostics')
@@ -1575,6 +1975,63 @@ def diagnostics_download():
         as_attachment=True,
         download_name=f"edge-tts-diagnostics-{timestamp}.zip",
         mimetype="application/zip",
+    )
+
+@app.route('/admin/logs')
+def admin_logs():
+    if g.current_user.get("role") != "admin":
+        return error_response("admin_required", "只有管理员可以查看日志。", 403)
+    kind = str(request.args.get("kind") or "application").strip().lower()
+    if kind not in {"application", "audit"}:
+        return error_response("invalid_log_kind", "日志类型无效。", 400)
+    level = str(request.args.get("level") or "").strip().upper()
+    if level and level not in LOG_LEVELS:
+        return error_response("invalid_log_level", "日志级别无效。", 400)
+    page = normalize_int(request.args.get("page"), 1, 1)
+    if request.args.get("page_size") is not None:
+        page_size = normalize_int(request.args.get("page_size"), 20, 10, 100)
+    else:
+        page_size = normalize_int(request.args.get("limit"), 20, 1, 500)
+    query = str(request.args.get("query") or "").strip()
+    matched_entries = read_log_entries(kind, level, query)
+    matched_entries.reverse()
+    total = len(matched_entries)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    start = (page - 1) * page_size
+    entries = matched_entries[start:start + page_size]
+    path = get_audit_log_path() if kind == "audit" else get_log_path()
+    return jsonify({
+        "kind": kind,
+        "entries": entries,
+        "count": len(entries),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+        "has_prev": page > 1,
+        "has_next": page < pages,
+        "path": path,
+        "size": os.path.getsize(path) if os.path.exists(path) else 0,
+        "levels": sorted(LOG_LEVELS),
+    })
+
+@app.route('/admin/logs/download')
+def admin_logs_download():
+    if g.current_user.get("role") != "admin":
+        return error_response("admin_required", "只有管理员可以下载日志。", 403)
+    kind = str(request.args.get("kind") or "application").strip().lower()
+    if kind not in {"application", "audit"}:
+        return error_response("invalid_log_kind", "日志类型无效。", 400)
+    path = get_audit_log_path() if kind == "audit" else get_log_path()
+    if not os.path.exists(path):
+        return error_response("log_not_found", "日志文件尚未生成。", 404)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=f"shengjian-{kind}-{timestamp}.jsonl",
+        mimetype="application/x-ndjson",
     )
 
 @app.route('/settings', methods=['GET', 'POST'])
@@ -1595,10 +2052,17 @@ def settings():
     with NETWORK_DIAGNOSTICS_LOCK:
         NETWORK_DIAGNOSTICS_CACHE["checked_at"] = 0
         NETWORK_DIAGNOSTICS_CACHE["data"] = None
+    clear_provider_caches()
     app.logger.info(
         "settings_updated actor=%s keys=%s",
         g.current_user["id"],
         ",".join(sorted(data.keys())),
+    )
+    audit_event(
+        "settings_updated",
+        changed_keys=sorted(data.keys()),
+        default_provider=updated_settings.get("default_provider"),
+        log_level=updated_settings.get("log_level"),
     )
     return jsonify(updated_settings)
 
@@ -1611,9 +2075,14 @@ def preview_speech():
         return error_response("empty_text", "请输入要试听的文本。", 400)
 
     try:
-        voice = validate_voice_id(request.form.get('voice') or get_settings().get("default_voice"))
+        provider, voice = resolve_provider_and_voice(
+            request.form.get("provider"),
+            request.form.get("voice"),
+        )
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
+    except ProviderError as e:
+        return error_response("provider_unavailable", str(e), 503)
 
     try:
         speech_rate = normalize_speech_rate(request.form.get('speech_rate') or get_settings().get("default_speech_rate"))
@@ -1629,17 +2098,15 @@ def preview_speech():
     except ValueError as e:
         return error_response("invalid_voice_parameter", str(e), 400)
 
-    if not check_network_connectivity():
-        return error_response("network_unavailable", "网络连接异常，无法连接到语音服务。请检查网络连接后重试。", 503)
-
     preview_text = text[:PREVIEW_TEXT_LENGTH]
     try:
-        audio_path = generate_speech_with_retries(
+        audio_path = generate_speech_for_provider(
             preview_text,
             voice,
             speech_rate,
             volume,
             pitch,
+            provider,
         )
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_id = register_single_result(
@@ -1647,12 +2114,13 @@ def preview_speech():
             f"preview_{timestamp}.mp3",
             owner_id=g.current_user["id"],
         )
-        remember_recent_voice(voice)
+        remember_recent_voice(voice, provider)
         return jsonify({
             "file_id": file_id,
             "audio_url": f"/audio/{file_id}",
             "download_url": f"/download/{file_id}",
             "text_length": len(preview_text),
+            "provider": provider,
             "voice": voice,
             "speech_rate": speech_rate,
             "volume": volume,
@@ -1682,52 +2150,61 @@ def generate_speech(
     speech_rate=DEFAULT_SPEECH_RATE,
     volume=DEFAULT_VOLUME,
     pitch=DEFAULT_PITCH,
+    provider="edge",
 ):
-    """使用 edge-tts Python API 生成语音"""
+    """使用选定的 TTS Provider 生成 MP3 音频。"""
+    provider = validate_provider_id(provider)
     temp_path = None
     try:
-        # 创建临时文件
         with create_temp_audio_file() as tmp_file:
             temp_path = tmp_file.name
-        
-        # 使用 edge-tts Python API
-        import asyncio
-        import edge_tts
-        import random
-        
-        async def _generate():
-            # 添加随机延迟，避免请求过于频繁
-            await asyncio.sleep(random.uniform(0.5, 2.0))
-            
-            # 使用更长的超时时间
-            communicate = edge_tts.Communicate(
-                text, 
-                voice,
-                rate=edge_rate_from_speech_rate(speech_rate),
-                volume=edge_volume_from_value(volume),
-                pitch=edge_pitch_from_value(pitch),
-                proxy=get_proxy_url(),
-                connect_timeout=CONNECT_TIMEOUT,
-                receive_timeout=RECEIVE_TIMEOUT
+
+        if provider == "edge":
+            import asyncio
+            import edge_tts
+            import random
+
+            async def _generate():
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+                communicate = edge_tts.Communicate(
+                    text,
+                    voice,
+                    rate=edge_rate_from_speech_rate(speech_rate),
+                    volume=edge_volume_from_value(volume),
+                    pitch=edge_pitch_from_value(pitch),
+                    proxy=get_proxy_url(),
+                    connect_timeout=CONNECT_TIMEOUT,
+                    receive_timeout=RECEIVE_TIMEOUT,
+                )
+                await communicate.save(temp_path)
+
+            asyncio.run(_generate())
+        else:
+            ensure_provider_available(provider)
+            audio_data = get_local_tts_client(provider).synthesize(
+                text=text,
+                voice=voice,
+                speech_rate=float(normalize_speech_rate(speech_rate)),
+                volume=float(normalize_volume(volume)),
+                pitch=int(normalize_pitch(pitch)),
             )
-            await communicate.save(temp_path)
-        
-        # 运行异步函数
-        asyncio.run(_generate())
-        
-        # 验证文件是否生成成功
+            with open(temp_path, "wb") as output_file:
+                output_file.write(audio_data)
+
         if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
             raise Exception("Failed to generate audio file")
-        
+
         return temp_path
+    except ProviderError:
+        unlink_audio_file(temp_path)
+        raise
     except Exception as e:
         error_msg = str(e)
-        app.logger.error(f"Error in generate_speech: {error_msg}")
-        
-        # 清理临时文件
+        app.logger.error("Error in generate_speech provider=%s: %s", provider, error_msg)
         unlink_audio_file(temp_path)
-        
-        # 根据错误类型提供更友好的错误信息
+
+        if provider != "edge":
+            raise Exception(f"{PROVIDER_DEFINITIONS[provider]['name']} 语音生成失败：{error_msg}")
         if "403" in error_msg or "forbidden" in error_msg.lower():
             raise Exception("Microsoft Edge TTS 拒绝了本次请求。请先升级 edge-tts；如果仍失败，请检查网络或配置 EDGE_TTS_PROXY 代理。")
         elif "timeout" in error_msg.lower():
@@ -1743,13 +2220,14 @@ def generate_speech_with_retries(
     speech_rate=DEFAULT_SPEECH_RATE,
     volume=DEFAULT_VOLUME,
     pitch=DEFAULT_PITCH,
+    provider="edge",
 ):
     """带重试的语音生成。"""
     last_error = None
 
     for attempt in range(MAX_RETRIES):
         try:
-            audio_path = generate_speech(text, voice, speech_rate, volume, pitch)
+            audio_path = generate_speech(text, voice, speech_rate, volume, pitch, provider)
 
             if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
                 raise Exception("Generated audio file is invalid")
@@ -1763,11 +2241,31 @@ def generate_speech_with_retries(
 
     raise Exception(last_error or '语音生成失败，请稍后重试。')
 
+def generate_speech_for_provider(
+    text,
+    voice,
+    speech_rate=DEFAULT_SPEECH_RATE,
+    volume=DEFAULT_VOLUME,
+    pitch=DEFAULT_PITCH,
+    provider="edge",
+):
+    """兼容既有 Edge 调用签名，同时为本地 Provider 传递引擎参数。"""
+    if validate_provider_id(provider) == "edge":
+        return generate_speech_with_retries(text, voice, speech_rate, volume, pitch)
+    return generate_speech_with_retries(
+        text,
+        voice,
+        speech_rate,
+        volume,
+        pitch,
+        provider,
+    )
+
 def get_error_status_code(error_message):
     """根据错误内容返回更合适的 HTTP 状态码。"""
     if error_message and any(
         keyword in error_message.lower()
-        for keyword in ("网络", "连接", "timeout", "proxy", "tts 拒绝")
+        for keyword in ("网络", "连接", "timeout", "proxy", "tts 拒绝", "引擎", "本地 tts")
     ):
         return 503
     return 500
@@ -1928,14 +2426,16 @@ def cleanup_before_request():
 def log_request(response):
     duration_ms = round((time.time() - getattr(g, "request_started_at", time.time())) * 1000)
     response.headers["X-Request-ID"] = getattr(g, "request_id", "-")
-    app.logger.info(
-        "request request_id=%s method=%s path=%s status=%s duration_ms=%s",
-        getattr(g, "request_id", "-"),
-        request.method,
-        request.path,
-        response.status_code,
-        duration_ms,
-    )
+    if not request.path.startswith("/static/"):
+        log_event(
+            "INFO",
+            "http_request",
+            method=request.method,
+            path=request.path,
+            status=response.status_code,
+            duration_ms=duration_ms,
+            user_id=(getattr(g, "current_user", None) or {}).get("id"),
+        )
     return response
 
 def public_batch_job(job):
@@ -1951,6 +2451,7 @@ def public_batch_job(job):
     return {
         "id": job["id"],
         "status": job["status"],
+        "provider": job.get("provider", "edge"),
         "voice": job["voice"],
         "speech_rate": job["speech_rate"],
         "volume": job.get("volume", DEFAULT_VOLUME),
@@ -2032,6 +2533,7 @@ def process_batch_job(job_id, only_item_id=None):
             speech_rate = job["speech_rate"]
             volume = job.get("volume", DEFAULT_VOLUME)
             pitch = job.get("pitch", DEFAULT_PITCH)
+            provider = job.get("provider", "edge")
 
         def mark_item_processing(job):
             for item in job["items"]:
@@ -2047,12 +2549,13 @@ def process_batch_job(job_id, only_item_id=None):
         update_batch_job(job_id, mark_item_processing)
 
         try:
-            audio_path = generate_speech_with_retries(
+            audio_path = generate_speech_for_provider(
                 text,
                 voice,
                 speech_rate,
                 volume,
                 pitch,
+                provider,
             )
             file_size = os.path.getsize(audio_path)
 
@@ -2114,6 +2617,15 @@ def process_batch_job(job_id, only_item_id=None):
             )
 
 @app.route('/')
+def home():
+    return render_template(
+        'home.html',
+        app_name=APP_NAME,
+        max_text_length=MAX_TEXT_LENGTH,
+        current_user=public_user(g.current_user),
+    )
+
+@app.route('/studio')
 def index():
     return render_template(
         'index.html',
@@ -2137,9 +2649,14 @@ def convert():
         return error_response("text_too_long", f"文本过长，最多支持 {MAX_TEXT_LENGTH} 字符。", 400)
 
     try:
-        voice = validate_voice_id(request.form.get('voice') or get_settings().get("default_voice"))
+        provider, voice = resolve_provider_and_voice(
+            request.form.get("provider"),
+            request.form.get("voice"),
+        )
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
+    except ProviderError as e:
+        return error_response("provider_unavailable", str(e), 503)
 
     try:
         speech_rate = normalize_speech_rate(request.form.get('speech_rate') or get_settings().get("default_speech_rate"))
@@ -2155,10 +2672,6 @@ def convert():
     except ValueError as e:
         return error_response("invalid_voice_parameter", str(e), 400)
     
-    # 检查网络连接
-    if not check_network_connectivity():
-        return error_response("network_unavailable", "网络连接异常，无法连接到语音服务。请检查网络连接后重试。", 503)
-
     try:
         job = create_text_job(
             text,
@@ -2167,16 +2680,26 @@ def convert():
             volume,
             pitch,
             owner_id=g.current_user["id"],
+            provider=provider,
         )
         app.logger.info(
-            "text_job_created job_id=%s owner_id=%s voice=%s text_length=%s chunks=%s",
+            "text_job_created job_id=%s owner_id=%s provider=%s voice=%s text_length=%s chunks=%s",
             job["id"],
             g.current_user["id"],
+            provider,
             voice,
             len(text),
             job["total"],
         )
-        remember_recent_voice(voice)
+        audit_event(
+            "text_job_created",
+            job_id=job["id"],
+            provider=provider,
+            voice=voice,
+            text_length=len(text),
+            chunks=job["total"],
+        )
+        remember_recent_voice(voice, provider)
         response_data = public_text_job(job)
         JOB_EXECUTOR.submit(process_text_job, job["id"])
         return jsonify(response_data), 202
@@ -2257,6 +2780,7 @@ def delete_task(kind, job_id):
         job = jobs.pop(job_id)
     cleanup(job)
     get_repository().delete_job(job_id)
+    audit_event("task_deleted", job_id=job_id, kind=kind, owner_id=job.get("owner_id"))
     return jsonify({"deleted": True})
 
 @app.route('/jobs/<job_id>')
@@ -2292,6 +2816,7 @@ def text_job_cancel(job_id):
         return error_response("text_job_not_found", "文本任务不存在或已过期。", 404)
 
     save_user_state()
+    audit_event("text_job_cancel_requested", job_id=job_id, status=job.get("status"))
     return jsonify(public_text_job(job))
 
 @app.route('/jobs/<job_id>/items/<item_id>/retry', methods=['POST'])
@@ -2319,6 +2844,7 @@ def text_job_retry_item(job_id, item_id):
         response_data = public_text_job(job)
 
     save_user_state()
+    audit_event("text_job_item_retry", job_id=job_id, item_id=item_id)
     JOB_EXECUTOR.submit(process_text_job, job_id, item_id)
     return jsonify(response_data), 202
 
@@ -2391,6 +2917,11 @@ def text_job_save_to_directory(job_id):
         g.current_user["id"],
         os.path.basename(target_path),
     )
+    audit_event(
+        "text_job_saved",
+        job_id=job_id,
+        filename=os.path.basename(target_path),
+    )
     return jsonify({"saved": True, "path": target_path})
 
 @app.route('/jobs/<job_id>/items/<item_id>/audio')
@@ -2440,9 +2971,14 @@ def batch_convert():
     run_periodic_cleanup(force=True)
 
     try:
-        voice = validate_voice_id(request.form.get('voice') or get_settings().get("default_voice"))
+        provider, voice = resolve_provider_and_voice(
+            request.form.get("provider"),
+            request.form.get("voice"),
+        )
     except ValueError as e:
         return error_response("invalid_voice", str(e), 400)
+    except ProviderError as e:
+        return error_response("provider_unavailable", str(e), 503)
 
     try:
         speech_rate = normalize_speech_rate(request.form.get('speech_rate') or get_settings().get("default_speech_rate"))
@@ -2457,9 +2993,6 @@ def batch_convert():
         )
     except ValueError as e:
         return error_response("invalid_voice_parameter", str(e), 400)
-
-    if not check_network_connectivity():
-        return error_response("network_unavailable", "网络连接异常，无法连接到语音服务。请检查网络连接后重试。", 503)
 
     files = request.files.getlist('files')
 
@@ -2519,6 +3052,7 @@ def batch_convert():
         "id": job_id,
         "owner_id": g.current_user["id"],
         "status": "queued",
+        "provider": provider,
         "voice": voice,
         "speech_rate": speech_rate,
         "volume": volume,
@@ -2541,14 +3075,24 @@ def batch_convert():
         BATCH_JOBS[job_id] = job
         get_repository().save_job("batch", job)
     app.logger.info(
-        "batch_job_created job_id=%s owner_id=%s voice=%s files=%s",
+        "batch_job_created job_id=%s owner_id=%s provider=%s voice=%s files=%s",
         job_id,
         g.current_user["id"],
+        provider,
         voice,
         len(items),
     )
+    audit_event(
+        "batch_job_created",
+        job_id=job_id,
+        provider=provider,
+        voice=voice,
+        file_count=len(items),
+        total_text_length=sum(item["text_length"] for item in items),
+    )
 
     response_data = public_batch_job(job)
+    remember_recent_voice(voice, provider)
     JOB_EXECUTOR.submit(process_batch_job, job_id)
 
     return jsonify(response_data), 202
@@ -2587,6 +3131,7 @@ def batch_cancel(job_id):
     job = update_batch_job(job_id, request_cancel)
     if not job:
         return error_response("batch_job_not_found", "批量任务不存在或已过期。", 404)
+    audit_event("batch_job_cancel_requested", job_id=job_id, status=job.get("status"))
     return jsonify(public_batch_job(job))
 
 @app.route('/batch/job/<job_id>/items/<item_id>/retry', methods=['POST'])
@@ -2615,6 +3160,7 @@ def batch_retry_item(job_id, item_id):
         response_data = public_batch_job(job)
 
     JOB_EXECUTOR.submit(process_batch_job, job_id, item_id)
+    audit_event("batch_job_item_retry", job_id=job_id, item_id=item_id)
     return jsonify(response_data), 202
 
 @app.route('/batch/download/<job_id>')
@@ -2765,11 +3311,12 @@ register_auth_routes(
     public_user,
     APP_NAME,
     APP_VERSION,
+    audit_event,
 )
 configure_secret_key()
-configure_logging()
 load_voice_cache()
 load_settings()
+configure_logging()
 load_user_state()
 
 if __name__ == '__main__':

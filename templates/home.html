@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="声笺，把文字快速转换为自然语音。">
+    <title>{{ app_name }} · 让文字被听见</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='brand/logo-mark.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/home.css') }}">
+</head>
+<body class="home-body">
+    <div class="home-shell">
+        <header class="home-nav">
+            <nav aria-label="主导航">
+                <a href="/studio">工作台</a>
+                {% if current_user.role == 'admin' %}<a href="/admin">管理</a>{% endif %}
+                <button id="home-logout" class="quiet-button" type="button">退出</button>
+            </nav>
+        </header>
+
+        <main class="home-main">
+            <section class="home-hero" aria-labelledby="home-title">
+                <h1 id="home-title" class="sr-only">{{ app_name }}文字转语音</h1>
+                <img class="hero-logo" src="{{ url_for('static', filename='brand/logo-lockup.svg') }}" alt="{{ app_name }}，让文字被听见">
+
+                <form id="quick-start-form" class="quick-start">
+                    <label class="sr-only" for="quick-text">输入需要转换的文字</label>
+                    <textarea id="quick-text" maxlength="{{ max_text_length }}" rows="2" placeholder="输入或粘贴要转换的文字" autofocus></textarea>
+                    <div class="quick-actions">
+                        <button id="quick-generate-btn" class="home-action" type="submit">立即生成</button>
+                        <button id="open-studio-btn" class="home-action" type="button">高级设置</button>
+                    </div>
+                </form>
+            </section>
+        </main>
+    </div>
+    <div id="home-toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="{{ url_for('static', filename='js/home.js') }}" defer></script>
+</body>
+</html>

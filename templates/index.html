@@ -4,19 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ app_name }} v{{ app_version }}</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='brand/logo-mark.svg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/studio.css') }}">
 </head>
 <body class="studio-body">
     <div class="app-shell">
         <header class="topbar">
-            <a class="brand" href="/" aria-label="{{ app_name }}工作台">
-                <span class="brand-mark">笺</span>
+            <a class="brand" href="/" aria-label="{{ app_name }}首页">
+                <img class="brand-logo" src="{{ url_for('static', filename='brand/logo-mark.svg') }}" alt="">
                 <span><strong>{{ app_name }}</strong><small>让文字被听见 · v{{ app_version }}</small></span>
             </a>
             <div class="topbar-actions">
                 <span class="service-state" id="network-status"><i></i><span id="status-text">检查服务</span></span>
+                <a class="quiet-link" href="/">首页</a>
                 {% if current_user.role == 'admin' %}
                 <a class="quiet-link" href="/admin">后台管理</a>
                 {% endif %}
@@ -61,6 +62,12 @@
                                 </div>
                             </div>
 
+                            <div class="settings-group engine-settings">
+                                <label for="provider-select">语音引擎</label>
+                                <select id="provider-select"><option value="">检查引擎...</option></select>
+                                <p id="provider-description" class="field-note">正在检查可用引擎</p>
+                            </div>
+
                             <div class="settings-group voice-settings">
                                 <label for="voice-search">搜索音色</label>
                                 <input id="voice-search" type="search" placeholder="名称、地区或风格">
@@ -79,13 +86,13 @@
                                             <option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2.0">2.0x</option>
                                         </select>
                                     </label>
-                                    <label>音量
+                                    <label data-capability="volume">音量
                                         <select id="volume-select">
                                             <option value="0.5">50%</option><option value="0.75">75%</option>
                                             <option value="1.0" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
                                         </select>
                                     </label>
-                                    <label>音高
+                                    <label data-capability="pitch">音高
                                         <select id="pitch-select">
                                             <option value="-20">低 20Hz</option><option value="-10">低 10Hz</option>
                                             <option value="0" selected>标准</option><option value="10">高 10Hz</option><option value="20">高 20Hz</option>
@@ -194,6 +201,7 @@
         };
     </script>
     <script src="{{ url_for('static', filename='js/file-selection.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/task-view-state.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 </body>
 </html>

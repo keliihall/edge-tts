@@ -45,6 +45,9 @@ def main():
         require_version(ROOT / script_name, r"from version import APP_VERSION")
         require_version(ROOT / script_name, r"from version import APP_SLUG")
     require_version(ROOT / "static/css/style.css", r'Noto Sans SC')
+    logo_path = ROOT / "static/brand/logo-mark.svg"
+    if not logo_path.is_file() or "<svg" not in logo_path.read_text(encoding="utf-8"):
+        raise SystemExit("品牌检查失败：logo-mark.svg 缺失或无效")
     font_path = ROOT / "static/fonts/NotoSansSC-VariableFont_wght.ttf"
     font_license_path = ROOT / "static/fonts/OFL.txt"
     if not font_path.is_file() or font_path.stat().st_size < 1_000_000:
@@ -60,16 +63,20 @@ def main():
         "auth.py",
         "run.py",
         "storage.py",
+        "tts_providers.py",
         "version.py",
         "scripts/release_check.py",
+        "scripts/check_local_tts.py",
         "scripts/smoke_tts.py",
     ])
     run([sys.executable, "-m", "pytest", "-q"])
     run([sys.executable, "-m", "pip", "check"])
     if shutil.which("node"):
         run(["node", "--check", "static/js/app.js"])
+        run(["node", "--check", "static/js/home.js"])
         run(["node", "--check", "static/js/admin.js"])
         run(["node", "--check", "static/js/file-selection.js"])
+        run(["node", "--check", "static/js/task-view-state.js"])
         run(["node", "scripts/test_frontend.js"])
 
     if args.build:

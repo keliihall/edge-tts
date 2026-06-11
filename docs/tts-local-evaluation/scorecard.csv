@@ -1,0 +1,13 @@
+model,variant,quality_zh,capability_fit,deployment_cost,integration_maturity,license_clarity,ecosystem,cross_platform,hardware_band,license_summary,recommendation
+CosyVoice 3,Fun-CosyVoice3-0.5B-2512,9.4,9.7,7.6,8.7,9.5,8.8,6.5,8-12 GB 显存舒适档,模型卡与仓库为 Apache-2.0；仍需审计随附第三方组件,首个高质量 Provider POC
+Qwen3-TTS,12Hz 0.6B and 1.7B,9.2,9.8,7.3,8.4,10.0,7.8,6.2,0.6B 规划 8-12 GB；1.7B 规划 12-24 GB,Apache-2.0,第二质量引擎及语音设计路线
+Chatterbox,Multilingual V3 zh-CMN 0.5B,8.4,8.8,8.0,8.5,10.0,7.8,8.0,8-12 GB 显存；CPU/MPS 可运行但更慢,MIT,宽松许可的跨平台克隆首选备选
+GPT-SoVITS,v2 ProPlus,8.8,9.5,7.8,7.3,8.5,9.2,8.7,8-12 GB 显存；支持 CPU 与 Apple Silicon,仓库 MIT；所有下载的第三方检查点需逐项审计,创作者工作流与定制音色强项
+Spark-TTS,0.5B,8.4,8.6,8.1,8.0,10.0,7.3,5.8,8-12 GB 显存,Apache-2.0,NVIDIA 平台的中英双语备选
+Kokoro,82M Mandarin pipeline,7.3,4.8,9.8,9.2,10.0,8.2,9.0,CPU 友好并支持 Apple Silicon,代码与权重 Apache-2.0,轻量离线固定音色首选
+OpenVoice,V2,7.5,9.0,8.3,7.3,10.0,7.2,7.2,消费级 GPU；CPU 可运行但吞吐较低,MIT,轻量语音克隆适配器
+IndexTTS2,1.5B,9.1,9.8,6.3,7.4,6.8,8.2,6.2,12-24 GB 显存舒适档,bilibili 自定义模型协议；含规模阈值与使用限制,法务评审后的高级配音与时长控制选项
+F5-TTS,F5-TTS v1.1.x,8.7,8.6,7.4,8.4,3.0,9.0,8.2,8-16 GB 显存；有社区 MLX/ONNX 移植,代码 MIT；官方预训练权重为 CC-BY-NC,仅作研究基准或替换为可商用权重
+Piper,piper1-gpl v1.4.x,6.2,3.5,10.0,9.4,4.5,8.8,9.8,CPU 与嵌入式友好,引擎 GPL-3.0；各音色模型另有许可证,仅用于 GPL 兼容的轻量发行路线
+Fish Audio S2,S2 Pro 4B/5B,10.0,10.0,3.2,8.5,2.0,7.2,3.0,建议 24 GB+ 显存；官方性能展示使用 H200,Fish Audio Research License；商业用途需另行授权,质量上限与实验室基准，不作为默认后端
+Edge TTS,Current cloud baseline,8.8,6.5,2.0,10.0,4.0,9.0,10.0,无需本地模型硬件但必须联网,非官方客户端调用远程服务；存在服务条款与可用性风险,保留为可选在线回退，不参与本地候选排名
