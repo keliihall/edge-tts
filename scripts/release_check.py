@@ -12,6 +12,13 @@ sys.path.insert(0, str(ROOT))
 from version import APP_NAME, APP_PACKAGE_NAME, APP_SLUG, APP_VERSION
 
 
+def configure_utf8_stdio():
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8")
+
+
 def run(command):
     print("+", " ".join(command))
     subprocess.run(command, cwd=ROOT, check=True)
@@ -24,6 +31,8 @@ def require_version(path, pattern):
 
 
 def main():
+    configure_utf8_stdio()
+
     parser = argparse.ArgumentParser(description=f"{APP_NAME} release gate")
     parser.add_argument("--build", action="store_true", help="同时执行当前平台构建")
     args = parser.parse_args()
