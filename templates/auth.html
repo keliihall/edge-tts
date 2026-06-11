@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "创建管理员" if mode == "setup" else "登录" }} · {{ app_name }}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="auth-body">
+    <main class="auth-shell">
+        <header>
+            <h1>{{ app_name }} <span class="version-badge">v{{ app_version }}</span></h1>
+            <p>{{ "首次使用，请创建管理员账户" if mode == "setup" else "登录本地语音工作台" }}</p>
+        </header>
+        <form id="auth-form" class="auth-form">
+            <label for="username">用户名</label>
+            <input id="username" class="filename-input" name="username" autocomplete="username" minlength="3" maxlength="32" required>
+            <label for="password">密码</label>
+            <input id="password" class="filename-input" name="password" type="password" autocomplete="{{ 'new-password' if mode == 'setup' else 'current-password' }}" minlength="8" maxlength="128" required>
+            {% if mode == "setup" %}
+            <label for="password-confirm">确认密码</label>
+            <input id="password-confirm" class="filename-input" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
+            {% endif %}
+            <p class="auth-error" id="auth-error" role="alert"></p>
+            <button class="btn" type="submit">{{ "创建管理员并进入" if mode == "setup" else "登录" }}</button>
+        </form>
+    </main>
+    <script>
+        const mode = {{ mode | tojson }};
+        const form = document.getElementById('auth-form');
+        const errorElement = document.getElementById('auth-error');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            errorElement.textContent = '';
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            if (mode === 'setup' && password !== document.getElementById('password-confirm').value) {
+                errorElement.textContent = '两次输入的密码不一致。';
+                return;
+            }
+            const response = await fetch(mode === 'setup' ? '/auth/setup' : '/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                errorElement.textContent = data.error?.message || '操作失败，请重试。';
+                return;
+            }
+            window.location.href = '/';
+        });
+    </script>
+</body>
+</html>

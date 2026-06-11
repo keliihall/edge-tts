@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from version import APP_SLUG
+
 block_cipher = None
 
 a = Analysis(
@@ -13,7 +15,6 @@ a = Analysis(
     hiddenimports=[
         'edge_tts',
         'edge_tts.communicate',
-        'edge_tts.list_voices',
         'aiohttp',
         'aiohttp.web',
         'aiohttp.client',
@@ -31,7 +32,6 @@ a = Analysis(
         'frozenlist',
         'aiosignal',
         'attrs',
-        'charset_normalizer',
         'idna',
         'typing_extensions',
     ],
@@ -62,7 +62,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='edge-tts-web',
+    name=APP_SLUG,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

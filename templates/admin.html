@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理 · {{ app_name }} v{{ app_version }}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="admin-body">
+    <div class="admin-shell">
+        <aside class="admin-sidebar">
+            <a class="brand inverse" href="/">
+                <span class="brand-mark">笺</span>
+                <span><strong>{{ app_name }}</strong><small>后台管理 · v{{ app_version }}</small></span>
+            </a>
+            <nav class="admin-nav" aria-label="后台导航">
+                <button class="admin-tab active" data-view="overview" type="button">运行概览</button>
+                <button class="admin-tab" data-view="tasks" type="button">任务管理</button>
+                <button class="admin-tab" data-view="users" type="button">用户管理</button>
+                <button class="admin-tab" data-view="settings" type="button">系统设置</button>
+                <button class="admin-tab" data-view="diagnostics" type="button">诊断信息</button>
+            </nav>
+            <div class="admin-account">
+                <span>{{ current_user.username }}</span>
+                <a href="/">返回前台</a>
+            </div>
+        </aside>
+
+        <main class="admin-main">
+            <header class="admin-topbar">
+                <div><p class="eyebrow">管理中心</p><h1 id="admin-view-title">运行概览</h1></div>
+                <button id="admin-refresh" class="secondary-button" type="button">刷新数据</button>
+            </header>
+
+            <section class="admin-view active" data-view-panel="overview">
+                <div id="overview-metrics" class="overview-metrics"></div>
+                <section class="admin-section">
+                    <div class="section-heading compact"><div><h2>最近任务</h2><p>用于判断队列压力和服务状态</p></div></div>
+                    <div id="overview-tasks" class="admin-table empty-state">暂无任务</div>
+                </section>
+            </section>
+
+            <section class="admin-view" data-view-panel="tasks">
+                <section class="admin-section">
+                    <div class="section-heading">
+                        <div><h2>全局任务</h2><p>后台保留管理、排障和清理能力，创作操作仍在前台完成。</p></div>
+                        <div class="task-toolbar">
+                            <select id="admin-task-kind"><option value="">全部类型</option><option value="text">文本</option><option value="batch">批量</option></select>
+                            <select id="admin-task-status"><option value="">全部状态</option><option value="queued">排队中</option><option value="processing">处理中</option><option value="finished">已结束</option><option value="cancelled">已取消</option></select>
+                        </div>
+                    </div>
+                    <div id="admin-task-list" class="admin-table empty-state">暂无任务</div>
+                </section>
+            </section>
+
+            <section class="admin-view" data-view-panel="users">
+                <div class="admin-two-column">
+                    <section class="admin-section">
+                        <h2>添加用户</h2>
+                        <form id="create-user-form" class="admin-form">
+                            <label>用户名<input id="new-username" minlength="3" maxlength="32" required></label>
+                            <label>初始密码<input id="new-password" type="password" minlength="8" maxlength="128" required></label>
+                            <label>角色<select id="new-role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>
+                            <button class="primary-button" type="submit">创建用户</button>
+                        </form>
+                    </section>
+                    <section class="admin-section">
+                        <div class="section-heading compact"><div><h2>现有用户</h2></div></div>
+                        <div id="users-list" class="admin-table"></div>
+                    </section>
+                </div>
+            </section>
+
+            <section class="admin-view" data-view-panel="settings">
+                <section class="admin-section">
+                    <div class="section-heading compact"><div><h2>服务设置</h2><p>只保留影响服务运行、存储和默认行为的配置。</p></div></div>
+                    <form id="settings-form" class="settings-form">
+                        <fieldset><legend>默认生成参数</legend>
+                            <label>默认音色<select id="settings-default-voice"></select></label>
+                            <label>默认语速<select id="settings-default-rate"><option value="0.75">0.75x</option><option value="0.9">0.9x</option><option value="1.0">1.0x</option><option value="1.1">1.1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2.0">2.0x</option></select></label>
+                            <label>默认音量<select id="settings-default-volume"><option value="0.5">50%</option><option value="0.75">75%</option><option value="1.0">100%</option><option value="1.25">125%</option><option value="1.5">150%</option></select></label>
+                            <label>默认音高<select id="settings-default-pitch"><option value="-20">低 20Hz</option><option value="-10">低 10Hz</option><option value="0">标准</option><option value="10">高 10Hz</option><option value="20">高 20Hz</option></select></label>
+                        </fieldset>
+                        <fieldset><legend>网络与文件</legend>
+                            <label>代理地址<input id="settings-proxy" placeholder="http://127.0.0.1:7890"></label>
+                            <label>后端默认保存目录<input id="settings-save-dir" placeholder="留空则仅使用浏览器下载"></label>
+                            <label>长文本分段字数<input id="settings-chunk-length" type="number" min="500" max="5000"></label>
+                            <label class="toggle-field"><input id="settings-auto-open" type="checkbox"><span>启动后自动打开浏览器</span></label>
+                        </fieldset>
+                        <fieldset><legend>保留策略</legend>
+                            <label>任务记录保留天数<input id="settings-task-days" type="number" min="1" max="365"></label>
+                            <label>历史展示保留天数<input id="settings-history-days" type="number" min="1" max="365"></label>
+                            <label>临时音频保留小时<input id="settings-temp-hours" type="number" min="1" max="168"></label>
+                        </fieldset>
+                        <button class="primary-button" type="submit">保存系统设置</button>
+                    </form>
+                </section>
+            </section>
+
+            <section class="admin-view" data-view-panel="diagnostics">
+                <section class="admin-section">
+                    <div class="section-heading">
+                        <div><h2>运行诊断</h2><p>路径和网络细节仅在后台展示。</p></div>
+                        <a class="secondary-button" href="/diagnostics/download">导出诊断包</a>
+                    </div>
+                    <div id="diagnostics-panel" class="diagnostic-grid"></div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <dialog id="password-dialog" class="app-dialog">
+        <form id="password-form">
+            <div class="dialog-heading"><h2 id="password-dialog-title">重置密码</h2><button type="button" class="icon-button" data-close-password>×</button></div>
+            <label class="stacked-field">新密码<input id="reset-password" type="password" minlength="8" maxlength="128" required></label>
+            <div class="dialog-actions"><button class="primary-button" type="submit">保存</button><button class="secondary-button" type="button" data-close-password>取消</button></div>
+        </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+</body>
+</html>

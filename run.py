@@ -47,6 +47,17 @@ def write_runtime_state(port):
         json.dump(state, state_file, ensure_ascii=False, indent=2)
     return state
 
+def clear_runtime_state():
+    """仅清理由当前进程创建的运行状态。"""
+    path = runtime_state_path()
+    state = read_runtime_state()
+    if state.get("pid") != os.getpid():
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
 def find_available_port(preferred_port=DEFAULT_PORT):
     if not can_connect(preferred_port):
         return preferred_port
@@ -90,8 +101,13 @@ def main():
     if settings.get("auto_open_browser", True):
         threading.Thread(target=open_browser, args=(port,), daemon=True).start()
     
-    # 启动Flask应用
-    app.run(host="127.0.0.1", port=port)
+    # 启动 Flask 应用，并在正常退出或中断时清理单实例状态。
+    try:
+        app.run(host="127.0.0.1", port=port)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        clear_runtime_state()
 
 if __name__ == '__main__':
     main() 

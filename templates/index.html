@@ -1,1255 +1,199 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文本转语音工具 v0.6</title>
+    <title>{{ app_name }} v{{ app_version }}</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/studio.css') }}">
 </head>
-<body>
-    <div class="container">
-        <header class="app-header">
-            <h1>文本转语音工具 <span class="version-badge">v0.6</span></h1>
+<body class="studio-body">
+    <div class="app-shell">
+        <header class="topbar">
+            <a class="brand" href="/" aria-label="{{ app_name }}工作台">
+                <span class="brand-mark">笺</span>
+                <span><strong>{{ app_name }}</strong><small>让文字被听见 · v{{ app_version }}</small></span>
+            </a>
+            <div class="topbar-actions">
+                <span class="service-state" id="network-status"><i></i><span id="status-text">检查服务</span></span>
+                {% if current_user.role == 'admin' %}
+                <a class="quiet-link" href="/admin">后台管理</a>
+                {% endif %}
+                <span class="user-chip">{{ current_user.username }}</span>
+                <button id="logout-btn" class="quiet-button" type="button">退出</button>
+            </div>
         </header>
 
-        <div class="network-status" id="network-status">
-            <span class="status-indicator" id="status-indicator">●</span>
-            <span class="status-text" id="status-text">检查网络连接中...</span>
-        </div>
-
-        <div class="form-group voice-selection">
-            <label for="voice-select">选择语音</label>
-            <div class="voice-tools">
-                <input type="search" id="voice-search" class="filename-input" placeholder="搜索音色、风格或地区">
-                <button id="favorite-voice-btn" class="btn secondary-btn small-btn" type="button">收藏</button>
-            </div>
-            <select id="voice-select" class="voice-select">
-                <option value="">加载中...</option>
-            </select>
-            <div class="voice-info">
-                <span class="gender"></span>
-                <span class="style"></span>
-            </div>
-            <div class="speed-selection">
-                <label for="preset-select">场景预设</label>
-                <select id="preset-select" class="speed-select">
-                    <option value="">自定义</option>
-                </select>
-            </div>
-            <div class="speed-selection">
-                <label for="speech-rate-select">语速</label>
-                <select id="speech-rate-select" class="speed-select">
-                    <option value="0.75">0.75x</option>
-                    <option value="0.9">0.9x</option>
-                    <option value="1.0" selected>1.0x</option>
-                    <option value="1.1">1.1x</option>
-                    <option value="1.25">1.25x</option>
-                    <option value="1.5">1.5x</option>
-                    <option value="2.0">2.0x</option>
-                </select>
-            </div>
-        </div>
-
-        <div class="mode-tabs" role="tablist" aria-label="转换模式">
-            <button type="button" class="mode-tab active" data-mode="single">单条文本</button>
-            <button type="button" class="mode-tab" data-mode="batch">批量 TXT</button>
-        </div>
-
-        <section class="mode-panel active" id="single-panel">
-            <div class="form-group">
-                <div class="field-header">
-                    <label for="text-input">文本内容</label>
-                    <span id="text-counter">0/200000</span>
+        <main class="workspace studio-workspace">
+            <header class="workspace-heading">
+                <div>
+                    <p class="workspace-label">语音工作台</p>
+                    <h1 id="composer-title">创建语音任务</h1>
                 </div>
-                <textarea id="text-input" maxlength="200000" placeholder="请输入要转换的文本..."></textarea>
-            </div>
+                <a class="task-jump" href="#tasks-title">查看任务进度</a>
+            </header>
 
-            <div class="action-row">
-                <button id="convert-btn" class="btn">转换为语音</button>
-                <button id="preview-btn" class="btn secondary-btn" type="button">试听</button>
-                <button id="single-cancel-btn" class="btn secondary-btn" type="button" disabled>取消任务</button>
-            </div>
+            <section class="composer creator-workbench" aria-labelledby="composer-title">
+                <aside class="creator-settings" aria-labelledby="settings-title">
+                    <div class="panel-heading">
+                        <span class="step-index">01</span>
+                        <div>
+                            <h2 id="settings-title">声音与输出</h2>
+                            <p>本次任务配置</p>
+                        </div>
+                    </div>
 
-            <div class="preview-section" id="preview-section">
-                <audio id="preview-audio" controls></audio>
-            </div>
+                    <details class="settings-disclosure" open>
+                        <summary>
+                            <span>配置详情</span>
+                            <strong class="compact-config-summary">默认配置</strong>
+                        </summary>
+                        <div class="settings-content">
+                            <div class="settings-group">
+                                <div class="group-heading">
+                                    <label for="favorite-select">常用配置</label>
+                                    <button id="save-favorite-btn" class="text-button" type="button">收藏当前</button>
+                                </div>
+                                <div class="favorite-control">
+                                    <select id="favorite-select"><option value="">选择收藏配置</option></select>
+                                    <button id="delete-favorite-btn" class="icon-button" type="button" title="删除当前收藏" aria-label="删除当前收藏">×</button>
+                                </div>
+                            </div>
 
-            <div class="loading" id="single-loading">
-                <p>正在转换中，请稍候...</p>
-            </div>
+                            <div class="settings-group voice-settings">
+                                <label for="voice-search">搜索音色</label>
+                                <input id="voice-search" type="search" placeholder="名称、地区或风格">
+                                <label for="voice-select">使用音色</label>
+                                <select id="voice-select"><option value="">加载中...</option></select>
+                                <p id="voice-description" class="field-note">选择适合内容气质的声音</p>
+                            </div>
 
-            <div class="batch-progress" id="single-progress">
-                <div class="progress-track">
-                    <div class="progress-bar" id="single-progress-bar"></div>
+                            <div class="settings-group">
+                                <span class="group-label">声音参数</span>
+                                <div class="parameter-grid">
+                                    <label>语速
+                                        <select id="speech-rate-select">
+                                            <option value="0.75">0.75x</option><option value="0.9">0.9x</option>
+                                            <option value="1.0" selected>1.0x</option><option value="1.1">1.1x</option>
+                                            <option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2.0">2.0x</option>
+                                        </select>
+                                    </label>
+                                    <label>音量
+                                        <select id="volume-select">
+                                            <option value="0.5">50%</option><option value="0.75">75%</option>
+                                            <option value="1.0" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
+                                        </select>
+                                    </label>
+                                    <label>音高
+                                        <select id="pitch-select">
+                                            <option value="-20">低 20Hz</option><option value="-10">低 10Hz</option>
+                                            <option value="0" selected>标准</option><option value="10">高 10Hz</option><option value="20">高 20Hz</option>
+                                        </select>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="settings-group output-settings">
+                                <label for="auto-download-select">任务完成后</label>
+                                <select id="auto-download-select">
+                                    <option value="off">保留在任务中心</option>
+                                    <option value="single">自动下载文本任务</option>
+                                    <option value="all">自动下载全部任务</option>
+                                </select>
+                            </div>
+                        </div>
+                    </details>
+                </aside>
+
+                <section class="creator-editor" aria-labelledby="content-title">
+                    <div class="editor-heading">
+                        <div class="panel-heading">
+                            <span class="step-index">02</span>
+                            <div>
+                                <h2 id="content-title">内容</h2>
+                                <p>文本或批量文件</p>
+                            </div>
+                        </div>
+                        <div class="mode-switch" role="tablist" aria-label="转换模式">
+                            <button class="mode-tab active" data-mode="single" type="button">文本</button>
+                            <button class="mode-tab" data-mode="batch" type="button">批量 TXT</button>
+                        </div>
+                    </div>
+
+                    <section id="single-panel" class="mode-panel active">
+                        <div class="field-header">
+                            <label for="text-input">文本内容</label>
+                            <span id="text-counter">0 / {{ max_text_length }}</span>
+                        </div>
+                        <textarea id="text-input" maxlength="{{ max_text_length }}" placeholder="粘贴或输入需要转换的内容"></textarea>
+                        <div class="action-bar">
+                            <span class="active-config-summary">正在加载配置</span>
+                            <div class="primary-actions">
+                                <button id="preview-btn" class="secondary-button" type="button">试听前 300 字</button>
+                                <button id="convert-btn" class="primary-button" type="button">加入任务队列</button>
+                            </div>
+                        </div>
+                        <audio id="preview-audio" class="inline-audio" controls hidden></audio>
+                    </section>
+
+                    <section id="batch-panel" class="mode-panel">
+                        <div class="upload-zone">
+                            <input id="batch-files" type="file" accept=".txt,text/plain" multiple>
+                            <label for="batch-files" class="upload-button">添加 TXT 文件</label>
+                            <div><strong id="batch-file-summary">尚未添加文件</strong><small>最多 {{ max_batch_files }} 个文件</small></div>
+                            <button id="batch-clear-btn" class="quiet-button" type="button">清空</button>
+                        </div>
+                        <div id="batch-file-list" class="file-list empty">暂无文件</div>
+                        <div class="action-bar">
+                            <span class="active-config-summary">正在加载配置</span>
+                            <button id="batch-convert-btn" class="primary-button" type="button">加入批量任务队列</button>
+                        </div>
+                    </section>
+                </section>
+            </section>
+
+            <section class="task-center" aria-labelledby="tasks-title">
+                <div class="section-heading">
+                    <div>
+                        <p class="workspace-label">任务中心</p>
+                        <h2 id="tasks-title">任务进度</h2>
+                    </div>
+                    <div class="task-toolbar">
+                        <select id="task-filter" aria-label="筛选任务">
+                            <option value="">全部任务</option>
+                            <option value="processing">进行中</option>
+                            <option value="queued">排队中</option>
+                            <option value="finished">已结束</option>
+                            <option value="cancelled">已取消</option>
+                        </select>
+                        <button id="refresh-tasks-btn" class="secondary-button" type="button">刷新</button>
+                    </div>
                 </div>
-                <div class="progress-text" id="single-progress-text">等待开始</div>
-            </div>
-
-            <div class="error-message" id="single-error">
-                <p>转换过程中出现错误，请重试。</p>
-            </div>
-
-            <div class="batch-result-section" id="single-result-section">
-                <div class="result-header">
-                    <h2>转换进度</h2>
-                    <button id="single-retry-failed-btn" class="btn small-btn secondary-btn" type="button" disabled>重试失败片段</button>
-                </div>
-                <div class="batch-results-list" id="single-results-list"></div>
-            </div>
-
-            <div class="download-section" id="single-download-section">
-                <div class="form-group">
-                    <input type="text" id="filename-input" class="filename-input" placeholder="输入保存的文件名（不需要.mp3后缀）">
-                </div>
-                <audio id="result-audio" controls></audio>
-                <button id="download-btn" class="btn">下载音频</button>
-            </div>
-        </section>
-
-        <section class="mode-panel" id="batch-panel">
-            <div class="batch-upload">
-                <input type="file" id="batch-files" accept=".txt,text/plain" multiple>
-                <label for="batch-files" class="btn secondary-btn">选择 TXT 文件</label>
-                <span class="file-summary" id="batch-file-summary">未选择文件</span>
-            </div>
-
-            <div class="batch-file-list empty" id="batch-file-list">未选择文件</div>
-
-            <div class="action-row">
-                <button id="batch-convert-btn" class="btn">批量转换</button>
-                <button id="batch-clear-btn" class="btn secondary-btn" type="button">清空</button>
-            </div>
-
-            <div class="batch-progress" id="batch-progress">
-                <div class="progress-track">
-                    <div class="progress-bar" id="batch-progress-bar"></div>
-                </div>
-                <div class="progress-text" id="batch-progress-text">等待开始</div>
-            </div>
-
-            <div class="error-message" id="batch-error">
-                <p>批量转换失败，请重试。</p>
-            </div>
-
-            <div class="batch-result-section" id="batch-result-section">
-                <div class="result-header">
-                    <h2>转换结果</h2>
-                    <button id="batch-download-all-btn" class="btn small-btn" type="button">下载 ZIP</button>
-                </div>
-                <div class="batch-results-list" id="batch-results-list"></div>
-            </div>
-        </section>
-
-        <section class="history-section" id="history-section">
-            <div class="result-header">
-                <h2>最近生成</h2>
-                <button id="history-refresh-btn" class="btn small-btn secondary-btn" type="button">刷新</button>
-            </div>
-            <div class="batch-results-list empty" id="history-list">暂无历史记录</div>
-        </section>
-
-        <section class="settings-section" id="settings-section">
-            <div class="result-header">
-                <h2>设置与诊断</h2>
-                <button id="diagnostics-btn" class="btn small-btn secondary-btn" type="button">重新诊断</button>
-            </div>
-            <div class="settings-grid">
-                <label>
-                    默认音色
-                    <select id="settings-default-voice" class="voice-select"></select>
-                </label>
-                <label>
-                    默认语速
-                    <select id="settings-default-rate" class="speed-select">
-                        <option value="0.75">0.75x</option>
-                        <option value="0.9">0.9x</option>
-                        <option value="1.0">1.0x</option>
-                        <option value="1.1">1.1x</option>
-                        <option value="1.25">1.25x</option>
-                        <option value="1.5">1.5x</option>
-                        <option value="2.0">2.0x</option>
-                    </select>
-                </label>
-                <label>
-                    代理地址
-                    <input type="text" id="settings-proxy" class="filename-input" placeholder="http://127.0.0.1:7890">
-                </label>
-                <label>
-                    默认保存目录
-                    <input type="text" id="settings-save-dir" class="filename-input" placeholder="留空使用浏览器默认下载目录">
-                </label>
-                <label>
-                    历史保留天数
-                    <input type="number" id="settings-history-days" class="filename-input" min="1" max="365">
-                </label>
-                <label>
-                    临时文件保留小时
-                    <input type="number" id="settings-temp-hours" class="filename-input" min="1" max="168">
-                </label>
-                <label>
-                    长文本分段字数
-                    <input type="number" id="settings-chunk-length" class="filename-input" min="500" max="5000">
-                </label>
-                <label class="checkbox-setting">
-                    <input type="checkbox" id="settings-auto-open">
-                    启动后自动打开浏览器
-                </label>
-            </div>
-            <div class="action-row">
-                <button id="settings-save-btn" class="btn" type="button">保存设置</button>
-            </div>
-            <div class="diagnostics-panel" id="diagnostics-panel">等待诊断</div>
-        </section>
+                <div id="task-summary" class="task-summary"></div>
+                <div id="task-list" class="task-list empty-state">暂无任务</div>
+            </section>
+        </main>
     </div>
 
+    <dialog id="favorite-dialog" class="app-dialog">
+        <form id="favorite-form">
+            <div class="dialog-heading"><h2>收藏当前配置</h2><button type="button" class="icon-button" data-close-dialog aria-label="关闭">×</button></div>
+            <label class="stacked-field">收藏名称<input id="favorite-name" maxlength="30" required placeholder="例如：温和小说旁白"></label>
+            <p id="favorite-preview" class="config-preview"></p>
+            <div class="dialog-actions"><button class="primary-button" type="submit">保存收藏</button><button class="secondary-button" type="button" data-close-dialog>取消</button></div>
+        </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const MAX_TEXT_LENGTH = 200000;
-            const MAX_BATCH_FILES = 20;
-            const textInput = document.getElementById('text-input');
-            const textCounter = document.getElementById('text-counter');
-            const voiceSelect = document.getElementById('voice-select');
-            const voiceSearch = document.getElementById('voice-search');
-            const favoriteVoiceBtn = document.getElementById('favorite-voice-btn');
-            const presetSelect = document.getElementById('preset-select');
-            const speechRateSelect = document.getElementById('speech-rate-select');
-            const convertBtn = document.getElementById('convert-btn');
-            const previewBtn = document.getElementById('preview-btn');
-            const previewSection = document.getElementById('preview-section');
-            const previewAudio = document.getElementById('preview-audio');
-            const resultAudio = document.getElementById('result-audio');
-            const singleCancelBtn = document.getElementById('single-cancel-btn');
-            const singleProgress = document.getElementById('single-progress');
-            const singleProgressBar = document.getElementById('single-progress-bar');
-            const singleProgressText = document.getElementById('single-progress-text');
-            const singleResultSection = document.getElementById('single-result-section');
-            const singleResultsList = document.getElementById('single-results-list');
-            const singleRetryFailedBtn = document.getElementById('single-retry-failed-btn');
-            const downloadSection = document.getElementById('single-download-section');
-            const downloadBtn = document.getElementById('download-btn');
-            const filenameInput = document.getElementById('filename-input');
-            const singleLoading = document.getElementById('single-loading');
-            const singleError = document.getElementById('single-error');
-            const genderSpan = document.querySelector('.gender');
-            const styleSpan = document.querySelector('.style');
-            const statusIndicator = document.getElementById('status-indicator');
-            const statusText = document.getElementById('status-text');
-            const modeTabs = document.querySelectorAll('.mode-tab');
-            const modePanels = document.querySelectorAll('.mode-panel');
-            const batchFileInput = document.getElementById('batch-files');
-            const batchFileSummary = document.getElementById('batch-file-summary');
-            const batchFileList = document.getElementById('batch-file-list');
-            const batchConvertBtn = document.getElementById('batch-convert-btn');
-            const batchClearBtn = document.getElementById('batch-clear-btn');
-            const batchProgress = document.getElementById('batch-progress');
-            const batchProgressBar = document.getElementById('batch-progress-bar');
-            const batchProgressText = document.getElementById('batch-progress-text');
-            const batchError = document.getElementById('batch-error');
-            const batchResultSection = document.getElementById('batch-result-section');
-            const batchResultsList = document.getElementById('batch-results-list');
-            const batchDownloadAllBtn = document.getElementById('batch-download-all-btn');
-            const historyList = document.getElementById('history-list');
-            const historyRefreshBtn = document.getElementById('history-refresh-btn');
-            const diagnosticsBtn = document.getElementById('diagnostics-btn');
-            const diagnosticsPanel = document.getElementById('diagnostics-panel');
-            const settingsDefaultVoice = document.getElementById('settings-default-voice');
-            const settingsDefaultRate = document.getElementById('settings-default-rate');
-            const settingsProxy = document.getElementById('settings-proxy');
-            const settingsSaveDir = document.getElementById('settings-save-dir');
-            const settingsHistoryDays = document.getElementById('settings-history-days');
-            const settingsTempHours = document.getElementById('settings-temp-hours');
-            const settingsChunkLength = document.getElementById('settings-chunk-length');
-            const settingsAutoOpen = document.getElementById('settings-auto-open');
-            const settingsSaveBtn = document.getElementById('settings-save-btn');
-
-            let currentSingleJobId = '';
-            let currentSingleJob = null;
-            let singlePollTimer = null;
-            let defaultDownloadName = '';
-            let voices = [];
-            let presets = [];
-            let preferences = { favorite_voices: [], recent_voices: [] };
-            let appSettings = {};
-            let networkStatus = 'checking';
-            let selectedBatchFiles = [];
-            let currentBatchJobId = '';
-            let batchPollTimer = null;
-            let batchJobFinished = false;
-
-            function showError(container, message) {
-                const errorText = container.querySelector('p');
-                errorText.textContent = message || '转换过程中出现错误，请重试。';
-                container.classList.add('show');
-            }
-
-            function getErrorMessage(data, fallback) {
-                if (data && data.error) {
-                    if (typeof data.error === 'string') {
-                        return data.error;
-                    }
-                    if (data.error.message) {
-                        return data.error.message;
-                    }
-                }
-                return fallback;
-            }
-
-            function hideError(container) {
-                container.classList.remove('show');
-            }
-
-            function formatBytes(bytes) {
-                if (!bytes) return '0 B';
-                if (bytes < 1024) return `${bytes} B`;
-                if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-                return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-            }
-
-            function statusTextFor(status) {
-                const labels = {
-                    queued: '排队中',
-                    pending: '等待中',
-                    processing: '转换中',
-                    finished: '已完成',
-                    cancelled: '已取消',
-                    done: '已完成',
-                    failed: '失败'
-                };
-                return labels[status] || status;
-            }
-
-            function formatDuration(seconds) {
-                if (seconds === null || seconds === undefined) return '估算中';
-                if (seconds < 60) return `${Math.round(seconds)} 秒`;
-                const minutes = Math.floor(seconds / 60);
-                const restSeconds = Math.round(seconds % 60);
-                return `${minutes} 分 ${restSeconds} 秒`;
-            }
-
-            function updateTextCounter() {
-                textCounter.textContent = `${textInput.value.length}/${MAX_TEXT_LENGTH}`;
-            }
-
-            async function checkNetworkStatus() {
-                try {
-                    const response = await fetch('/health');
-                    const data = await response.json();
-                    networkStatus = data.network_connectivity ? 'connected' : 'disconnected';
-
-                    if (data.network_connectivity) {
-                        statusIndicator.textContent = '●';
-                        statusIndicator.style.color = '#4CAF50';
-                        statusText.textContent = '网络连接正常';
-                    } else {
-                        statusIndicator.textContent = '●';
-                        statusIndicator.style.color = '#f44336';
-                        statusText.textContent = '网络连接异常';
-                    }
-                } catch (error) {
-                    networkStatus = 'error';
-                    statusIndicator.textContent = '●';
-                    statusIndicator.style.color = '#ff9800';
-                    statusText.textContent = '无法检查网络状态';
-                }
-            }
-
-            async function loadVoices() {
-                try {
-                    const preferencesResponse = await fetch('/preferences');
-                    preferences = await preferencesResponse.json();
-                    const response = await fetch('/voices');
-                    voices = await response.json();
-                    renderVoiceOptions();
-                    updateVoiceInfo(voices.find(voice => voice.id === voiceSelect.value) || voices[0]);
-                    renderSettings();
-                } catch (error) {
-                    console.error('Failed to load voices:', error);
-                    voiceSelect.innerHTML = '<option value="">加载失败</option>';
-                }
-            }
-
-            async function loadPresets() {
-                try {
-                    const response = await fetch('/presets');
-                    presets = await response.json();
-                    presets.forEach(preset => {
-                        const option = document.createElement('option');
-                        option.value = preset.id;
-                        option.textContent = preset.name;
-                        presetSelect.appendChild(option);
-                    });
-                } catch (error) {
-                    console.error('Failed to load presets:', error);
-                }
-            }
-
-            async function loadSettings() {
-                try {
-                    const response = await fetch('/settings');
-                    appSettings = await response.json();
-                    renderSettings();
-                } catch (error) {
-                    diagnosticsPanel.textContent = '设置加载失败';
-                }
-            }
-
-            function renderSettings() {
-                if (!voices.length) return;
-
-                settingsDefaultVoice.innerHTML = '';
-                voices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.id;
-                    option.textContent = voice.name;
-                    settingsDefaultVoice.appendChild(option);
-                });
-
-                settingsDefaultVoice.value = appSettings.default_voice || 'zh-CN-XiaoxiaoNeural';
-                settingsDefaultRate.value = appSettings.default_speech_rate || '1.0';
-                settingsProxy.value = appSettings.proxy_url || '';
-                settingsSaveDir.value = appSettings.default_save_dir || '';
-                settingsHistoryDays.value = appSettings.history_retention_days || 7;
-                settingsTempHours.value = appSettings.temp_file_ttl_hours || 6;
-                settingsChunkLength.value = appSettings.chunk_length || 5000;
-                settingsAutoOpen.checked = appSettings.auto_open_browser !== false;
-
-                if (appSettings.default_voice && !voiceSelect.value) {
-                    voiceSelect.value = appSettings.default_voice;
-                    updateVoiceInfo(voices.find(voice => voice.id === appSettings.default_voice));
-                }
-                if (appSettings.default_speech_rate) {
-                    speechRateSelect.value = appSettings.default_speech_rate;
-                }
-            }
-
-            async function saveSettings() {
-                const payload = {
-                    default_voice: settingsDefaultVoice.value,
-                    default_speech_rate: settingsDefaultRate.value,
-                    proxy_url: settingsProxy.value.trim(),
-                    default_save_dir: settingsSaveDir.value.trim(),
-                    history_retention_days: Number(settingsHistoryDays.value || 7),
-                    temp_file_ttl_hours: Number(settingsTempHours.value || 6),
-                    chunk_length: Number(settingsChunkLength.value || 5000),
-                    auto_open_browser: settingsAutoOpen.checked
-                };
-
-                try {
-                    settingsSaveBtn.disabled = true;
-                    const response = await fetch('/settings', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '设置保存失败'));
-                    }
-                    appSettings = data;
-                    renderSettings();
-                    diagnosticsPanel.textContent = '设置已保存';
-                    checkNetworkStatus();
-                    loadDiagnostics();
-                } catch (error) {
-                    diagnosticsPanel.textContent = error.message || '设置保存失败';
-                } finally {
-                    settingsSaveBtn.disabled = false;
-                }
-            }
-
-            async function loadDiagnostics() {
-                try {
-                    const response = await fetch('/diagnostics');
-                    const data = await response.json();
-                    diagnosticsPanel.innerHTML = '';
-                    const rows = [
-                        ['版本', data.version],
-                        ['代理配置', data.proxy_configured ? data.proxy_url : '未配置'],
-                        ['代理可用', data.proxy_available ? '是' : '否'],
-                        ['Edge TTS 服务', data.edge_tts_available ? '可连接' : '不可连接'],
-                        ['整体网络', data.network_connectivity ? '可用' : '异常'],
-                        ['设置文件', data.settings_path],
-                        ['临时目录', data.temp_dir]
-                    ];
-
-                    rows.forEach(([label, value]) => {
-                        const line = document.createElement('div');
-                        line.className = 'diagnostics-row';
-                        line.innerHTML = `<strong>${label}</strong><span>${value}</span>`;
-                        diagnosticsPanel.appendChild(line);
-                    });
-                } catch (error) {
-                    diagnosticsPanel.textContent = '诊断失败';
-                }
-            }
-
-            function renderVoiceOptions() {
-                const previousValue = voiceSelect.value;
-                const query = voiceSearch.value.trim().toLowerCase();
-                const favoriteSet = new Set(preferences.favorite_voices || []);
-                const recentSet = new Set(preferences.recent_voices || []);
-
-                const filteredVoices = voices
-                    .filter(voice => {
-                        if (!query) return true;
-                        return [voice.name, voice.id, voice.gender, voice.style]
-                            .join(' ')
-                            .toLowerCase()
-                            .includes(query);
-                    })
-                    .sort((a, b) => {
-                        const aFavorite = favoriteSet.has(a.id) ? 1 : 0;
-                        const bFavorite = favoriteSet.has(b.id) ? 1 : 0;
-                        if (aFavorite !== bFavorite) return bFavorite - aFavorite;
-                        const aRecent = recentSet.has(a.id) ? 1 : 0;
-                        const bRecent = recentSet.has(b.id) ? 1 : 0;
-                        if (aRecent !== bRecent) return bRecent - aRecent;
-                        return a.name.localeCompare(b.name, 'zh-Hans-CN');
-                    });
-
-                voiceSelect.innerHTML = '';
-
-                filteredVoices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.id;
-                    const markers = [
-                        favoriteSet.has(voice.id) ? '★' : '',
-                        recentSet.has(voice.id) ? '最近' : ''
-                    ].filter(Boolean).join(' ');
-                    option.textContent = markers ? `${markers} ${voice.name}` : voice.name;
-                    voiceSelect.appendChild(option);
-                });
-
-                if (filteredVoices.some(voice => voice.id === previousValue)) {
-                    voiceSelect.value = previousValue;
-                }
-
-                updateVoiceInfo(voices.find(voice => voice.id === voiceSelect.value));
-            }
-
-            function updateVoiceInfo(voice) {
-                if (voice) {
-                    genderSpan.textContent = `性别：${voice.gender}`;
-                    styleSpan.textContent = `风格：${voice.style}`;
-                    const favoriteSet = new Set(preferences.favorite_voices || []);
-                    favoriteVoiceBtn.textContent = favoriteSet.has(voice.id) ? '取消收藏' : '收藏';
-                } else {
-                    genderSpan.textContent = '';
-                    styleSpan.textContent = '';
-                    favoriteVoiceBtn.textContent = '收藏';
-                }
-            }
-
-            function setMode(mode) {
-                modeTabs.forEach(tab => {
-                    tab.classList.toggle('active', tab.dataset.mode === mode);
-                });
-                modePanels.forEach(panel => {
-                    panel.classList.toggle('active', panel.id === `${mode}-panel`);
-                });
-            }
-
-            function renderBatchFiles() {
-                batchFileList.innerHTML = '';
-                batchFileList.classList.toggle('empty', selectedBatchFiles.length === 0);
-
-                if (selectedBatchFiles.length === 0) {
-                    batchFileSummary.textContent = '未选择文件';
-                    batchFileList.textContent = '未选择文件';
-                    return;
-                }
-
-                batchFileSummary.textContent = `已选择 ${selectedBatchFiles.length} 个文件`;
-
-                selectedBatchFiles.forEach((file, index) => {
-                    const row = document.createElement('div');
-                    row.className = 'file-row';
-
-                    const meta = document.createElement('div');
-                    meta.className = 'file-meta';
-
-                    const name = document.createElement('span');
-                    name.className = 'file-name';
-                    name.textContent = file.name;
-
-                    const size = document.createElement('span');
-                    size.className = 'file-size';
-                    size.textContent = formatBytes(file.size);
-
-                    const removeBtn = document.createElement('button');
-                    removeBtn.type = 'button';
-                    removeBtn.className = 'icon-btn';
-                    removeBtn.dataset.removeIndex = index;
-                    removeBtn.title = '移除文件';
-                    removeBtn.textContent = '×';
-
-                    meta.appendChild(name);
-                    meta.appendChild(size);
-                    row.appendChild(meta);
-                    row.appendChild(removeBtn);
-                    batchFileList.appendChild(row);
-                });
-            }
-
-            function resetSingleJobView() {
-                if (singlePollTimer) {
-                    clearInterval(singlePollTimer);
-                    singlePollTimer = null;
-                }
-
-                currentSingleJobId = '';
-                currentSingleJob = null;
-                defaultDownloadName = '';
-                singleProgress.classList.remove('show');
-                singleResultSection.classList.remove('show');
-                downloadSection.classList.remove('show');
-                singleProgressBar.style.width = '0%';
-                singleProgressText.textContent = '等待开始';
-                singleResultsList.innerHTML = '';
-                singleCancelBtn.disabled = true;
-                singleRetryFailedBtn.disabled = true;
-            }
-
-            function renderSingleJob(job) {
-                currentSingleJob = job;
-                currentSingleJobId = job.id;
-
-                const progressPercent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
-                singleProgress.classList.add('show');
-                singleProgressBar.style.width = `${progressPercent}%`;
-
-                const etaText = job.estimated_remaining_seconds === null || job.estimated_remaining_seconds === undefined
-                    ? '剩余时间估算中'
-                    : `预计剩余 ${formatDuration(job.estimated_remaining_seconds)}`;
-                singleProgressText.textContent = `已完成 ${job.completed}/${job.total} · 成功 ${job.success_count} · 失败 ${job.failed_count} · ${etaText}`;
-
-                singleResultSection.classList.add('show');
-                singleCancelBtn.disabled = !['queued', 'processing'].includes(job.status);
-                singleRetryFailedBtn.disabled = job.failed_count === 0 || job.status === 'processing';
-                downloadSection.classList.toggle('show', job.downloadable && job.status !== 'processing');
-                updateResultAudio(job);
-
-                if (job.download_name && !filenameInput.value.trim()) {
-                    filenameInput.value = job.download_name;
-                }
-
-                singleResultsList.innerHTML = '';
-                job.items.forEach(item => {
-                    const row = document.createElement('div');
-                    row.className = `result-row ${item.status}`;
-
-                    const meta = document.createElement('div');
-                    meta.className = 'result-meta';
-
-                    const name = document.createElement('span');
-                    name.className = 'file-name';
-                    name.textContent = job.total > 1 ? `片段 ${item.index}` : '完整文本';
-
-                    const detail = document.createElement('span');
-                    detail.className = 'file-size';
-                    const sizeText = item.size ? formatBytes(item.size) : statusTextFor(item.status);
-                    detail.textContent = `${item.text_length} 字 · ${sizeText} · 尝试 ${item.attempts || 0} 次`;
-
-                    meta.appendChild(name);
-                    meta.appendChild(detail);
-
-                    if (item.error) {
-                        const error = document.createElement('span');
-                        error.className = 'result-error';
-                        error.textContent = item.error;
-                        meta.appendChild(error);
-                    }
-
-                    row.appendChild(meta);
-
-                    if (['failed', 'cancelled'].includes(item.status) && job.status !== 'processing') {
-                        const retryButton = document.createElement('button');
-                        retryButton.type = 'button';
-                        retryButton.className = 'btn small-btn';
-                        retryButton.dataset.retryItemId = item.id;
-                        retryButton.textContent = '重试';
-                        row.appendChild(retryButton);
-                    } else {
-                        const status = document.createElement('span');
-                        status.className = `result-status ${item.status}`;
-                        status.textContent = statusTextFor(item.status);
-                        row.appendChild(status);
-                    }
-
-                    singleResultsList.appendChild(row);
-                });
-            }
-
-            async function pollSingleStatus() {
-                if (!currentSingleJobId) return;
-
-                try {
-                    const response = await fetch(`/jobs/${encodeURIComponent(currentSingleJobId)}`);
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '无法获取转换任务状态'));
-                    }
-
-                    renderSingleJob(data);
-
-                    if (['finished', 'cancelled'].includes(data.status)) {
-                        singleLoading.classList.remove('show');
-                        convertBtn.disabled = false;
-                        singleCancelBtn.disabled = true;
-                        loadHistory();
-                        if (singlePollTimer) {
-                            clearInterval(singlePollTimer);
-                            singlePollTimer = null;
-                        }
-                    }
-                } catch (error) {
-                    showError(singleError, error.message || '无法获取转换任务状态');
-                    singleLoading.classList.remove('show');
-                    convertBtn.disabled = false;
-                    singleCancelBtn.disabled = true;
-                    if (singlePollTimer) {
-                        clearInterval(singlePollTimer);
-                        singlePollTimer = null;
-                    }
-                }
-            }
-
-            function startSinglePolling() {
-                if (singlePollTimer) {
-                    clearInterval(singlePollTimer);
-                }
-                singlePollTimer = setInterval(pollSingleStatus, 1200);
-                pollSingleStatus();
-            }
-
-            async function retrySingleItem(itemId) {
-                if (!currentSingleJobId || !itemId) return;
-
-                try {
-                    const response = await fetch(`/jobs/${encodeURIComponent(currentSingleJobId)}/items/${encodeURIComponent(itemId)}/retry`, {
-                        method: 'POST'
-                    });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '重试失败'));
-                    }
-                    singleLoading.classList.add('show');
-                    convertBtn.disabled = true;
-                    renderSingleJob(data);
-                    startSinglePolling();
-                } catch (error) {
-                    showError(singleError, error.message || '重试失败');
-                }
-            }
-
-            function updateResultAudio(job) {
-                if (job && job.audio_url) {
-                    resultAudio.src = job.audio_url;
-                    resultAudio.style.display = 'block';
-                } else {
-                    resultAudio.removeAttribute('src');
-                    resultAudio.style.display = 'none';
-                }
-            }
-
-            async function loadHistory() {
-                try {
-                    const response = await fetch('/history');
-                    const items = await response.json();
-                    renderHistory(items);
-                } catch (error) {
-                    historyList.classList.add('empty');
-                    historyList.textContent = '历史记录加载失败';
-                }
-            }
-
-            function renderHistory(items) {
-                historyList.innerHTML = '';
-                historyList.classList.toggle('empty', items.length === 0);
-
-                if (items.length === 0) {
-                    historyList.textContent = '暂无历史记录';
-                    return;
-                }
-
-                items.forEach(item => {
-                    const row = document.createElement('div');
-                    row.className = 'result-row done';
-
-                    const meta = document.createElement('div');
-                    meta.className = 'result-meta';
-
-                    const title = document.createElement('span');
-                    title.className = 'file-name';
-                    title.textContent = item.title;
-
-                    const detail = document.createElement('span');
-                    detail.className = 'file-size';
-                    detail.textContent = `${item.summary || '无摘要'} · ${item.text_length} 字 · 成功 ${item.success_count}/${item.total}`;
-
-                    meta.appendChild(title);
-                    meta.appendChild(detail);
-
-                    const actions = document.createElement('div');
-                    actions.className = 'row-actions';
-
-                    if (item.audio_url) {
-                        const playButton = document.createElement('button');
-                        playButton.type = 'button';
-                        playButton.className = 'btn small-btn secondary-btn';
-                        playButton.dataset.historyAudio = item.audio_url;
-                        playButton.textContent = '播放';
-                        actions.appendChild(playButton);
-                    }
-
-                    const downloadLink = document.createElement('a');
-                    downloadLink.className = 'btn small-btn';
-                    downloadLink.href = item.download_url;
-                    downloadLink.textContent = '下载';
-                    actions.appendChild(downloadLink);
-
-                    const deleteButton = document.createElement('button');
-                    deleteButton.type = 'button';
-                    deleteButton.className = 'btn small-btn secondary-btn';
-                    deleteButton.dataset.historyDelete = item.id;
-                    deleteButton.textContent = '删除';
-                    actions.appendChild(deleteButton);
-
-                    row.appendChild(meta);
-                    row.appendChild(actions);
-                    historyList.appendChild(row);
-                });
-            }
-
-            function resetBatchJob() {
-                if (batchPollTimer) {
-                    clearInterval(batchPollTimer);
-                    batchPollTimer = null;
-                }
-
-                if (currentBatchJobId && batchJobFinished) {
-                    fetch(`/batch/job/${currentBatchJobId}`, { method: 'DELETE' }).catch(() => {});
-                }
-
-                currentBatchJobId = '';
-                batchJobFinished = false;
-                selectedBatchFiles = [];
-                batchFileInput.value = '';
-                batchProgress.classList.remove('show');
-                batchResultSection.classList.remove('show');
-                batchProgressBar.style.width = '0%';
-                batchProgressText.textContent = '等待开始';
-                batchConvertBtn.disabled = false;
-                batchDownloadAllBtn.disabled = true;
-                hideError(batchError);
-                renderBatchFiles();
-            }
-
-            function renderBatchJob(job) {
-                const progressPercent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
-                batchProgress.classList.add('show');
-                batchProgressBar.style.width = `${progressPercent}%`;
-                batchProgressText.textContent = `已完成 ${job.completed}/${job.total} · 成功 ${job.success_count} · 失败 ${job.failed_count}`;
-                batchResultSection.classList.add('show');
-                batchDownloadAllBtn.disabled = job.success_count === 0;
-
-                batchResultsList.innerHTML = '';
-                job.items.forEach(item => {
-                    const row = document.createElement('div');
-                    row.className = `result-row ${item.status}`;
-
-                    const meta = document.createElement('div');
-                    meta.className = 'result-meta';
-
-                    const name = document.createElement('span');
-                    name.className = 'file-name';
-                    name.textContent = item.source_name;
-
-                    const detail = document.createElement('span');
-                    detail.className = 'file-size';
-                    detail.textContent = `${item.text_length} 字 · ${item.size ? formatBytes(item.size) : statusTextFor(item.status)}`;
-
-                    meta.appendChild(name);
-                    meta.appendChild(detail);
-
-                    if (item.error) {
-                        const error = document.createElement('span');
-                        error.className = 'result-error';
-                        error.textContent = item.error;
-                        meta.appendChild(error);
-                    }
-
-                    const status = document.createElement('span');
-                    status.className = `result-status ${item.status}`;
-                    status.textContent = statusTextFor(item.status);
-
-                    row.appendChild(meta);
-
-                    if (item.status === 'done') {
-                        const downloadLink = document.createElement('a');
-                        downloadLink.className = 'btn small-btn';
-                        downloadLink.href = `/batch/download/${encodeURIComponent(job.id)}/${encodeURIComponent(item.id)}`;
-                        downloadLink.textContent = '下载';
-                        row.appendChild(downloadLink);
-                    } else {
-                        row.appendChild(status);
-                    }
-
-                    batchResultsList.appendChild(row);
-                });
-            }
-
-            async function pollBatchStatus() {
-                if (!currentBatchJobId) return;
-
-                try {
-                    const response = await fetch(`/batch/status/${currentBatchJobId}`);
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '无法获取批量任务状态'));
-                    }
-
-                    renderBatchJob(data);
-
-                    if (data.status === 'finished') {
-                        batchJobFinished = true;
-                        batchConvertBtn.disabled = false;
-                        if (batchPollTimer) {
-                            clearInterval(batchPollTimer);
-                            batchPollTimer = null;
-                        }
-                    }
-                } catch (error) {
-                    showError(batchError, error.message || '无法获取批量任务状态');
-                    batchConvertBtn.disabled = false;
-                    if (batchPollTimer) {
-                        clearInterval(batchPollTimer);
-                        batchPollTimer = null;
-                    }
-                }
-            }
-
-            voiceSelect.addEventListener('change', function() {
-                const selectedVoice = voices.find(v => v.id === this.value);
-                updateVoiceInfo(selectedVoice);
-            });
-
-            voiceSearch.addEventListener('input', renderVoiceOptions);
-
-            favoriteVoiceBtn.addEventListener('click', async function() {
-                const selectedVoice = voiceSelect.value;
-                if (!selectedVoice) return;
-                const favoriteSet = new Set(preferences.favorite_voices || []);
-                const nextFavorite = !favoriteSet.has(selectedVoice);
-
-                try {
-                    const response = await fetch(`/preferences/favorites/${encodeURIComponent(selectedVoice)}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ favorite: nextFavorite })
-                    });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '收藏失败'));
-                    }
-                    preferences = data;
-                    renderVoiceOptions();
-                    voiceSelect.value = selectedVoice;
-                    updateVoiceInfo(voices.find(voice => voice.id === selectedVoice));
-                } catch (error) {
-                    showError(singleError, error.message || '收藏失败');
-                }
-            });
-
-            presetSelect.addEventListener('change', function() {
-                const selectedPreset = presets.find(preset => preset.id === this.value);
-                if (!selectedPreset) return;
-
-                if (selectedPreset.voice) {
-                    voiceSelect.value = selectedPreset.voice;
-                    if (voiceSelect.value !== selectedPreset.voice) {
-                        voiceSearch.value = '';
-                        renderVoiceOptions();
-                        voiceSelect.value = selectedPreset.voice;
-                    }
-                    updateVoiceInfo(voices.find(voice => voice.id === selectedPreset.voice));
-                }
-                if (selectedPreset.speech_rate) {
-                    speechRateSelect.value = selectedPreset.speech_rate;
-                }
-            });
-
-            modeTabs.forEach(tab => {
-                tab.addEventListener('click', function() {
-                    setMode(this.dataset.mode);
-                });
-            });
-
-            textInput.addEventListener('input', updateTextCounter);
-
-            convertBtn.addEventListener('click', async function() {
-                const text = textInput.value.trim();
-                if (!text) {
-                    alert('请输入要转换的文本');
-                    return;
-                }
-
-                const selectedVoice = voiceSelect.value;
-                if (!selectedVoice) {
-                    alert('请选择语音');
-                    return;
-                }
-
-                if (networkStatus === 'disconnected') {
-                    alert('网络连接异常，无法使用语音转换功能。请检查网络连接后重试。');
-                    return;
-                }
-
-                resetSingleJobView();
-                singleLoading.classList.add('show');
-                convertBtn.disabled = true;
-                hideError(singleError);
-
-                try {
-                    const formData = new FormData();
-                    formData.append('text', text);
-                    formData.append('voice', selectedVoice);
-                    formData.append('speech_rate', speechRateSelect.value || '1.0');
-
-                    const response = await fetch('/convert', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '转换失败'));
-                    }
-
-                    currentSingleJobId = data.id;
-                    defaultDownloadName = data.download_name || '';
-                    filenameInput.value = defaultDownloadName;
-                    renderSingleJob(data);
-                    startSinglePolling();
-                } catch (error) {
-                    showError(singleError, error.message || '转换过程中出现错误，请重试。');
-                    singleLoading.classList.remove('show');
-                    convertBtn.disabled = false;
-                }
-            });
-
-            previewBtn.addEventListener('click', async function() {
-                const text = textInput.value.trim();
-                if (!text) {
-                    alert('请输入要试听的文本');
-                    return;
-                }
-
-                const selectedVoice = voiceSelect.value;
-                if (!selectedVoice) {
-                    alert('请选择语音');
-                    return;
-                }
-
-                previewBtn.disabled = true;
-                hideError(singleError);
-
-                try {
-                    const formData = new FormData();
-                    formData.append('text', text);
-                    formData.append('voice', selectedVoice);
-                    formData.append('speech_rate', speechRateSelect.value || '1.0');
-
-                    const response = await fetch('/preview', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '试听失败'));
-                    }
-                    previewAudio.src = data.audio_url;
-                    previewSection.classList.add('show');
-                    previewAudio.play().catch(() => {});
-                    await loadVoices();
-                } catch (error) {
-                    showError(singleError, error.message || '试听失败');
-                } finally {
-                    previewBtn.disabled = false;
-                }
-            });
-
-            downloadBtn.addEventListener('click', function() {
-                if (!currentSingleJobId) return;
-
-                let downloadName = filenameInput.value.trim();
-                if (!downloadName) {
-                    downloadName = defaultDownloadName || 'speech';
-                }
-
-                const downloadUrl = `/jobs/${encodeURIComponent(currentSingleJobId)}/download?name=${encodeURIComponent(downloadName)}`;
-                window.location.href = downloadUrl;
-            });
-
-            singleCancelBtn.addEventListener('click', async function() {
-                if (!currentSingleJobId) return;
-
-                try {
-                    const response = await fetch(`/jobs/${encodeURIComponent(currentSingleJobId)}/cancel`, {
-                        method: 'POST'
-                    });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '取消失败'));
-                    }
-                    renderSingleJob(data);
-                    pollSingleStatus();
-                } catch (error) {
-                    showError(singleError, error.message || '取消失败');
-                }
-            });
-
-            singleRetryFailedBtn.addEventListener('click', async function() {
-                if (!currentSingleJob) return;
-                const failedItems = currentSingleJob.items.filter(item => ['failed', 'cancelled'].includes(item.status));
-                if (failedItems.length === 0) return;
-                await retrySingleItem(failedItems[0].id);
-            });
-
-            singleResultsList.addEventListener('click', async function(event) {
-                const retryItemId = event.target.dataset.retryItemId;
-                if (!retryItemId) return;
-                await retrySingleItem(retryItemId);
-            });
-
-            batchFileInput.addEventListener('change', function() {
-                const files = Array.from(this.files);
-                const txtFiles = files.filter(file => file.name.toLowerCase().endsWith('.txt'));
-
-                if (txtFiles.length !== files.length) {
-                    alert('仅支持 TXT 文件');
-                }
-
-                if (txtFiles.length > MAX_BATCH_FILES) {
-                    alert(`一次最多上传 ${MAX_BATCH_FILES} 个 TXT 文件`);
-                }
-
-                selectedBatchFiles = txtFiles.slice(0, MAX_BATCH_FILES);
-                hideError(batchError);
-                batchResultSection.classList.remove('show');
-                batchProgress.classList.remove('show');
-                renderBatchFiles();
-            });
-
-            batchFileList.addEventListener('click', function(event) {
-                const removeIndex = event.target.dataset.removeIndex;
-                if (removeIndex === undefined) return;
-
-                selectedBatchFiles.splice(Number(removeIndex), 1);
-                batchFileInput.value = '';
-                renderBatchFiles();
-            });
-
-            batchConvertBtn.addEventListener('click', async function() {
-                if (selectedBatchFiles.length === 0) {
-                    alert('请选择 TXT 文件');
-                    return;
-                }
-
-                const selectedVoice = voiceSelect.value;
-                if (!selectedVoice) {
-                    alert('请选择语音');
-                    return;
-                }
-
-                if (networkStatus === 'disconnected') {
-                    alert('网络连接异常，无法使用语音转换功能。请检查网络连接后重试。');
-                    return;
-                }
-
-                hideError(batchError);
-                batchConvertBtn.disabled = true;
-                batchResultSection.classList.remove('show');
-                batchProgress.classList.add('show');
-                batchProgressBar.style.width = '0%';
-                batchProgressText.textContent = '正在创建批量任务...';
-
-                try {
-                    const formData = new FormData();
-                    formData.append('voice', selectedVoice);
-                    formData.append('speech_rate', speechRateSelect.value || '1.0');
-                    selectedBatchFiles.forEach(file => {
-                        formData.append('files', file);
-                    });
-
-                    const response = await fetch('/batch/convert', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    const data = await response.json();
-
-                    if (!response.ok) {
-                        throw new Error(getErrorMessage(data, '批量转换失败'));
-                    }
-
-                    currentBatchJobId = data.id;
-                    batchJobFinished = false;
-                    renderBatchJob(data);
-
-                    if (batchPollTimer) {
-                        clearInterval(batchPollTimer);
-                    }
-                    batchPollTimer = setInterval(pollBatchStatus, 1500);
-                    pollBatchStatus();
-                } catch (error) {
-                    showError(batchError, error.message || '批量转换失败，请重试。');
-                    batchProgress.classList.remove('show');
-                    batchConvertBtn.disabled = false;
-                }
-            });
-
-            batchDownloadAllBtn.addEventListener('click', function() {
-                if (!currentBatchJobId) return;
-                window.location.href = `/batch/download/${encodeURIComponent(currentBatchJobId)}`;
-            });
-
-            batchClearBtn.addEventListener('click', resetBatchJob);
-
-            historyRefreshBtn.addEventListener('click', loadHistory);
-            settingsSaveBtn.addEventListener('click', saveSettings);
-            diagnosticsBtn.addEventListener('click', loadDiagnostics);
-
-            historyList.addEventListener('click', async function(event) {
-                const audioUrl = event.target.dataset.historyAudio;
-                const deleteId = event.target.dataset.historyDelete;
-
-                if (audioUrl) {
-                    resultAudio.src = audioUrl;
-                    downloadSection.classList.add('show');
-                    resultAudio.style.display = 'block';
-                    resultAudio.play().catch(() => {});
-                    return;
-                }
-
-                if (deleteId) {
-                    const response = await fetch(`/history/${encodeURIComponent(deleteId)}`, { method: 'DELETE' });
-                    if (response.ok) {
-                        loadHistory();
-                    }
-                }
-            });
-
-            updateTextCounter();
-            renderBatchFiles();
-            batchDownloadAllBtn.disabled = true;
-            checkNetworkStatus();
-            loadSettings();
-            loadPresets();
-            loadVoices();
-            loadHistory();
-            loadDiagnostics();
-            setInterval(checkNetworkStatus, 30000);
-        });
+        window.EDGE_TTS_CONFIG = {
+            maxTextLength: {{ max_text_length }},
+            maxBatchFiles: {{ max_batch_files }},
+            settings: {{ settings | tojson }}
+        };
     </script>
+    <script src="{{ url_for('static', filename='js/file-selection.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 </body>
 </html>
